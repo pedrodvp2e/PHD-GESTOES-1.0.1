@@ -1,0 +1,94 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Space Grotesk', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --color-primary: #0066ff;
+  --color-primary-light: #3b82f6;
+  --color-primary-dark: #0052cc;
+  --color-primary-50: #eff6ff;
+  --color-primary-100: #dbeafe;
+  --color-secondary: #0a0e27;
+  --color-secondary-light: #1a1f3a;
+  --color-accent: #00d9ff;
+  --color-accent-light: #7dd3fc;
+  --color-success: #00c896;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
+  --color-error-light: #fef2f2;
+  --color-background: #f0f4ff;
+  --color-surface: #ffffff;
+  --color-surface-alt: #f8faff;
+  --color-text: #0a0e27;
+  --color-text-secondary: #475569;
+  --color-text-light: #94a3b8;
+  --color-border: #e2e8f5;
+  --color-border-dark: #cbd5e1;
+  --color-input-bg: #f1f5ff;
+  --color-sidebar: #0a0e27;
+  --color-sidebar-light: #1a1f3a;
+}
+
+/*
+  Modo escuro nativo: segue automaticamente o tema do sistema Android
+  (Configurações > Tela > Tema escuro). Não há botão manual no app —
+  o app simplesmente respeita a preferência do dispositivo, igual a
+  qualquer app nativo.
+*/
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-secondary: #f1f5f9;
+    --color-background: #0b0e1a;
+    --color-surface: #131826;
+    --color-surface-alt: #171d2e;
+    --color-text: #f1f5f9;
+    --color-text-secondary: #a3adc2;
+    --color-text-light: #6b7386;
+    --color-border: #262e42;
+    --color-border-dark: #323b52;
+    --color-input-bg: #1a2033;
+    --color-primary-50: #101a33;
+    --color-primary-100: #16213d;
+    --color-error-light: #2a1518;
+  }
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-background);
+  color: var(--color-text);
+  overflow-x: hidden;
+  color-scheme: light dark;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-dark);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-light);
+}
