@@ -12,7 +12,7 @@ import { useAuth } from './lib/auth';
 import { requestNotificationPermission, sendNativeNotification } from './lib/notifications';
 import appIcon from './assets/images/icon.png';
 import { supabase, mockDb, ROLE_LABELS, ROLE_COLORS, STATUS_LABELS, STATUS_COLORS, uploadAvatar, isRealSupabaseConfigured, realSupabase } from './lib/supabase';
-import { Project, Task, Material, Message, LocalNotification, UserRole, Profile } from './types';
+import { Project, Task, Material, Message, LocalNotification, UserRole, Profile, ProjectMember } from './types';
 
 export default function App() {
   const { session, profile, loading, signIn, signUp, signOut, refreshProfile } = useAuth();
@@ -69,6 +69,7 @@ export default function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [materials, setMaterials] = useState<Material[]>([]);
   const [team, setTeam] = useState<Profile[]>([]);
+  const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
   const [notifications, setNotifications] = useState<LocalNotification[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
 
@@ -154,12 +155,14 @@ export default function App() {
           { data: materialsData },
           { data: profilesData },
           { data: messagesData },
+          { data: membersData },
         ] = await Promise.all([
           realSupabase.from('projects').select('*').order('created_at', { ascending: false }),
           realSupabase.from('tasks').select('*'),
           realSupabase.from('materials').select('*'),
           realSupabase.from('profiles').select('*'),
           realSupabase.from('messages').select('*').order('created_at', { ascending: true }),
+          realSupabase.from('project_members').select('*'),
         ]);
 
         setProjects((projectsData as Project[]) || []);
@@ -167,6 +170,7 @@ export default function App() {
         setMaterials((materialsData as Material[]) || []);
         setTeam((profilesData as Profile[]) || []);
         setMessages((messagesData as Message[]) || []);
+        setProjectMembers((membersData as ProjectMember[]) || []);
         // Notificações permanecem locais ao dispositivo (não há tabela no banco)
         setNotifications(mockDb.getNotifications());
       } catch (err) {
@@ -182,6 +186,7 @@ export default function App() {
     setTeam(mockDb.getProfiles());
     setNotifications(mockDb.getNotifications());
     setMessages(mockDb.getMessages());
+    setProjectMembers(mockDb.getMembers());
   };
 
   useEffect(() => {
@@ -429,19 +434,12 @@ export default function App() {
     }
   };
 
-  // Quick Login for testing
-  const handleQuickLogin = async (role: UserRole) => {
+  // Quick Login (acesso rápido de teste - apenas uma opção)
+  const handleQuickLogin = async () => {
     setAuthLoading(true);
     setAuthError(null);
-    const emailMap: Record<UserRole, string> = {
-      engenheiro: 'joao@obras.com',
-      mestre_obra: 'pedro@obras.com',
-      encarregado: 'carlos@obras.com',
-      funcionario: 'lucas@obras.com',
-      admin: 'admin@obras.com',
-    };
     try {
-      await signIn(emailMap[role] || 'joao@obras.com', '123456');
+      await signIn('joao@obras.com', '123456');
     } catch (err: any) {
       setAuthError(err.message);
     } finally {
@@ -603,28 +601,36 @@ export default function App() {
   const [newTaskAssigned, setNewTaskAssigned] = useState('');
   const [newTaskDeadline, setNewTaskDeadline] = useState('');
 
-  const handleCreateTask = (e: React.FormEvent) => {
+  const handleCreateTask = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTaskTitle.trim() || !selectedProjectId) return;
 
-    const newTask: Task = {
-      id: `task-${Date.now()}`,
+    const basePayload = {
       project_id: selectedProjectId,
       title: newTaskTitle.trim(),
       description: newTaskDesc.trim() || null,
       category: newTaskCat.trim() || 'Serviço',
-      status: 'pendente',
+      status: 'pendente' as const,
       progress: 0,
       start_date: new Date().toISOString().split('T')[0],
       deadline: newTaskDeadline || null,
       assigned_to: newTaskAssigned || null,
       created_by: profile?.id || 'guest',
-      created_at: new Date().toISOString()
     };
 
-    const currentTasks = mockDb.getTasks();
-    currentTasks.push(newTask);
-    mockDb.setTasks(currentTasks);
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('tasks').insert(basePayload);
+      if (error) {
+        console.error('Erro ao criar serviço:', error);
+        alert('Não foi possível criar o serviço: ' + error.message);
+        return;
+      }
+    } else {
+      const newTask: Task = { id: `task-${Date.now()}`, created_at: new Date().toISOString(), ...basePayload };
+      const currentTasks = mockDb.getTasks();
+      currentTasks.push(newTask);
+      mockDb.setTasks(currentTasks);
+    }
 
     setNewTaskTitle('');
     setNewTaskDesc('');
@@ -636,9 +642,9 @@ export default function App() {
 
     // Trigger Notification
     const proj = projects.find(p => p.id === selectedProjectId);
-    if (newTask.assigned_to) {
-      const assignedUser = team.find(u => u.id === newTask.assigned_to);
-      triggerNotification('task_deadline', 'Serviço Atribuído', `O serviço "${newTask.title}" foi atribuído a ${assignedUser?.full_name || 'um colaborador'} na obra ${proj?.name}.`, selectedProjectId, proj?.name || '');
+    if (basePayload.assigned_to) {
+      const assignedUser = team.find(u => u.id === basePayload.assigned_to);
+      triggerNotification('task_deadline', 'Serviço Atribuído', `O serviço "${basePayload.title}" foi atribuído a ${assignedUser?.full_name || 'um colaborador'} na obra ${proj?.name}.`, selectedProjectId, proj?.name || '');
     }
   };
 
@@ -649,25 +655,33 @@ export default function App() {
   const [newMatAcquired, setNewMatAcquired] = useState(0);
   const [newMatNotes, setNewMatNotes] = useState('');
 
-  const handleCreateMaterial = (e: React.FormEvent) => {
+  const handleCreateMaterial = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newMatName.trim() || !selectedProjectId) return;
 
-    const newMaterial: Material = {
-      id: `mat-${Date.now()}`,
+    const basePayload = {
       project_id: selectedProjectId,
       name: newMatName.trim(),
-      unit: newMatUnit || 'Unid',
+      unit: newMatUnit || 'un',
       needed_quantity: Number(newMatNeeded) || 1,
       acquired_quantity: Number(newMatAcquired) || 0,
       notes: newMatNotes.trim() || null,
       created_by: profile?.id || 'guest',
-      created_at: new Date().toISOString()
     };
 
-    const currentMats = mockDb.getMaterials();
-    currentMats.push(newMaterial);
-    mockDb.setMaterials(currentMats);
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('materials').insert(basePayload);
+      if (error) {
+        console.error('Erro ao criar material:', error);
+        alert('Não foi possível criar o suprimento: ' + error.message);
+        return;
+      }
+    } else {
+      const newMaterial: Material = { id: `mat-${Date.now()}`, created_at: new Date().toISOString(), ...basePayload };
+      const currentMats = mockDb.getMaterials();
+      currentMats.push(newMaterial);
+      mockDb.setMaterials(currentMats);
+    }
 
     setNewMatName('');
     setNewMatUnit('');
@@ -678,54 +692,94 @@ export default function App() {
     loadData();
 
     // Trigger low stock warning if needed
-    if (newMaterial.acquired_quantity / newMaterial.needed_quantity < stockThreshold / 100) {
+    if (basePayload.acquired_quantity / basePayload.needed_quantity < stockThreshold / 100) {
       const proj = projects.find(p => p.id === selectedProjectId);
-      triggerNotification('material_low', 'Suprimento Crítico', `O suprimento "${newMaterial.name}" está com estoque crítico (menos de ${stockThreshold}% adquirido) na obra ${proj?.name}.`, selectedProjectId, proj?.name || '');
+      triggerNotification('material_low', 'Suprimento Crítico', `O suprimento "${basePayload.name}" está com estoque crítico (menos de ${stockThreshold}% adquirido) na obra ${proj?.name}.`, selectedProjectId, proj?.name || '');
     }
   };
 
   // Update Material Acquired Quantity
-  const handleUpdateMaterialQuantity = (materialId: string, delta: number) => {
-    const currentMats = mockDb.getMaterials();
-    const idx = currentMats.findIndex(m => m.id === materialId);
-    if (idx !== -1) {
-      const m = currentMats[idx];
-      const nextAcquired = Math.max(0, m.acquired_quantity + delta);
-      currentMats[idx] = { ...m, acquired_quantity: nextAcquired };
-      mockDb.setMaterials(currentMats);
-      loadData();
+  const handleUpdateMaterialQuantity = async (materialId: string, delta: number) => {
+    const currentMatState = materials.find(m => m.id === materialId);
+    if (!currentMatState) return;
+    const nextAcquired = Math.max(0, currentMatState.acquired_quantity + delta);
 
-      // Notification if falls below critical level
-      if (nextAcquired / m.needed_quantity < stockThreshold / 100 && delta < 0) {
-        const proj = projects.find(p => p.id === m.project_id);
-        triggerNotification('material_low', 'Estoque Alerta', `O suprimento "${m.name}" atingiu nível crítico (${Math.round(nextAcquired / m.needed_quantity * 100)}% - limite configurado: ${stockThreshold}%) na obra ${proj?.name}.`, m.project_id, proj?.name || '');
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('materials').update({ acquired_quantity: nextAcquired }).eq('id', materialId);
+      if (error) {
+        console.error('Erro ao atualizar material:', error);
+        return;
       }
+    } else {
+      const currentMats = mockDb.getMaterials();
+      const idx = currentMats.findIndex(m => m.id === materialId);
+      if (idx === -1) return;
+      currentMats[idx] = { ...currentMats[idx], acquired_quantity: nextAcquired };
+      mockDb.setMaterials(currentMats);
+    }
+
+    loadData();
+
+    // Notification if falls below critical level
+    if (nextAcquired / currentMatState.needed_quantity < stockThreshold / 100 && delta < 0) {
+      const proj = projects.find(p => p.id === currentMatState.project_id);
+      triggerNotification('material_low', 'Estoque Alerta', `O suprimento "${currentMatState.name}" atingiu nível crítico (${Math.round(nextAcquired / currentMatState.needed_quantity * 100)}% - limite configurado: ${stockThreshold}%) na obra ${proj?.name}.`, currentMatState.project_id, proj?.name || '');
     }
   };
 
   // Invite Team Member to Project
   const [inviteUserId, setInviteUserId] = useState('');
-  const handleInviteMember = (e: React.FormEvent) => {
+  const [inviteMode, setInviteMode] = useState<'existing' | 'new'>('existing');
+  const [newEmployeeName, setNewEmployeeName] = useState('');
+  const [newEmployeePhone, setNewEmployeePhone] = useState('');
+  const [newEmployeeRole, setNewEmployeeRole] = useState<UserRole>('funcionario');
+  const handleInviteMember = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inviteUserId || !selectedProjectId) return;
 
-    const currentMembers = mockDb.getMembers();
-    const alreadyMember = currentMembers.some(m => m.project_id === selectedProjectId && m.user_id === inviteUserId);
-    
-    if (alreadyMember) {
-      alert('Este colaborador já faz parte da equipe deste projeto!');
-      return;
+    const alreadyMember = mockDb.getMembers().some(m => m.project_id === selectedProjectId && m.user_id === inviteUserId);
+    const invitedUser = team.find(u => u.id === inviteUserId);
+
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { data: existing } = await realSupabase
+        .from('project_members')
+        .select('id')
+        .eq('project_id', selectedProjectId)
+        .eq('user_id', inviteUserId)
+        .maybeSingle();
+
+      if (existing) {
+        alert('Este colaborador já faz parte da equipe deste projeto!');
+        return;
+      }
+
+      const { error } = await realSupabase.from('project_members').insert({
+        project_id: selectedProjectId,
+        user_id: inviteUserId,
+        project_role: invitedUser?.role || 'funcionario',
+      });
+
+      if (error) {
+        console.error('Erro ao adicionar colaborador:', error);
+        alert('Não foi possível adicionar o colaborador: ' + error.message);
+        return;
+      }
+    } else {
+      if (alreadyMember) {
+        alert('Este colaborador já faz parte da equipe deste projeto!');
+        return;
+      }
+      const currentMembers = mockDb.getMembers();
+      currentMembers.push({
+        id: `m-${Date.now()}`,
+        project_id: selectedProjectId,
+        user_id: inviteUserId,
+        project_role: invitedUser?.role || 'funcionario',
+        created_at: new Date().toISOString()
+      });
+      mockDb.setMembers(currentMembers);
     }
 
-    const invitedUser = team.find(u => u.id === inviteUserId);
-    currentMembers.push({
-      id: `m-${Date.now()}`,
-      project_id: selectedProjectId,
-      user_id: inviteUserId,
-      project_role: invitedUser?.role || 'funcionario',
-      created_at: new Date().toISOString()
-    });
-    mockDb.setMembers(currentMembers);
     setInviteUserId('');
     setShowInviteMember(false);
     loadData();
@@ -734,28 +788,85 @@ export default function App() {
     triggerNotification('system', 'Equipe Atualizada', `${invitedUser?.full_name} foi integrado à equipe da obra ${proj?.name}.`, selectedProjectId, proj?.name || '');
   };
 
+  // Cadastra um funcionário novo diretamente (nome, telefone, cargo) e já adiciona à obra atual
+  const handleAddNewEmployee = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newEmployeeName.trim() || !selectedProjectId) return;
+
+    if (isRealSupabaseConfigured && realSupabase) {
+      alert('No modo com Supabase real, cada profissional precisa criar a própria conta (cadastro com e-mail e senha) antes de poder ser adicionado à equipe, pois o perfil fica vinculado ao login dele. Peça para o profissional se cadastrar e depois use a opção "Já Tem Conta" para adicioná-lo à obra.');
+      return;
+    }
+
+    const newProfile: Profile = {
+      id: `func-${Date.now()}`,
+      full_name: newEmployeeName.trim(),
+      role: newEmployeeRole,
+      phone: newEmployeePhone.trim() || null,
+      avatar_url: null,
+      created_at: new Date().toISOString(),
+    };
+
+    const currentProfiles = mockDb.getProfiles();
+    currentProfiles.push(newProfile);
+    mockDb.setProfiles(currentProfiles);
+
+    const currentMembers = mockDb.getMembers();
+    currentMembers.push({
+      id: `m-${Date.now()}`,
+      project_id: selectedProjectId,
+      user_id: newProfile.id,
+      project_role: newEmployeeRole,
+      created_at: new Date().toISOString(),
+    });
+    mockDb.setMembers(currentMembers);
+
+    setNewEmployeeName('');
+    setNewEmployeePhone('');
+    setNewEmployeeRole('funcionario');
+    setShowInviteMember(false);
+    loadData();
+
+    const proj = projects.find(p => p.id === selectedProjectId);
+    triggerNotification('system', 'Equipe Atualizada', `${newProfile.full_name} foi cadastrado e integrado à equipe da obra ${proj?.name}.`, selectedProjectId, proj?.name || '');
+  };
+
   // Send Project Chat Message
   const [chatInput, setChatInput] = useState('');
-  const handleSendMessage = (e: React.FormEvent) => {
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim() || !selectedProjectId || !profile) return;
 
-    const newMsg: Message = {
-      id: `msg-${Date.now()}`,
-      project_id: selectedProjectId,
-      user_id: profile.id,
-      content: chatInput.trim(),
-      created_at: new Date().toISOString()
-    };
-
-    const currentMsgs = mockDb.getMessages();
-    currentMsgs.push(newMsg);
-    mockDb.setMessages(currentMsgs);
+    const content = chatInput.trim();
     setChatInput('');
+
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('messages').insert({
+        project_id: selectedProjectId,
+        user_id: profile.id,
+        content,
+      });
+      if (error) {
+        console.error('Erro ao enviar mensagem:', error);
+        return;
+      }
+    } else {
+      const newMsg: Message = {
+        id: `msg-${Date.now()}`,
+        project_id: selectedProjectId,
+        user_id: profile.id,
+        content,
+        created_at: new Date().toISOString()
+      };
+      const currentMsgs = mockDb.getMessages();
+      currentMsgs.push(newMsg);
+      mockDb.setMessages(currentMsgs);
+    }
+
     loadData();
 
-    // Simulate reply from mestre de obras after 2 seconds
-    if (profile.role === 'engenheiro') {
+    // Simulate reply from mestre de obras after 2 seconds (somente no modo sandbox)
+    if (!isRealSupabaseConfigured && profile.role === 'engenheiro') {
       setTimeout(() => {
         const replyMsg: Message = {
           id: `msg-${Date.now() + 1}`,
@@ -773,59 +884,76 @@ export default function App() {
   };
 
   // Change Task Status & Progress
-  const handleUpdateTaskStatus = (taskId: string, newStatus: Task['status'], progressValue?: number) => {
-    const currentTasks = mockDb.getTasks();
-    const idx = currentTasks.findIndex(t => t.id === taskId);
-    if (idx !== -1) {
-      const t = currentTasks[idx];
-      let finalProgress = progressValue !== undefined ? progressValue : t.progress;
-      if (newStatus === 'concluido') finalProgress = 100;
-      if (newStatus === 'pendente') finalProgress = 0;
+  const handleUpdateTaskStatus = async (taskId: string, newStatus: Task['status'], progressValue?: number) => {
+    const t = tasks.find(x => x.id === taskId);
+    if (!t) return;
+    let finalProgress = progressValue !== undefined ? progressValue : t.progress;
+    if (newStatus === 'concluido') finalProgress = 100;
+    if (newStatus === 'pendente') finalProgress = 0;
 
-      currentTasks[idx] = { ...t, status: newStatus, progress: finalProgress };
-      mockDb.setTasks(currentTasks);
-      
-      // Auto-calculate total project progress based on average task progress
-      recalculateProjectProgress(t.project_id);
-      loadData();
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('tasks').update({ status: newStatus, progress: finalProgress }).eq('id', taskId);
+      if (error) {
+        console.error('Erro ao atualizar serviço:', error);
+        return;
+      }
+    } else {
+      const currentTasks = mockDb.getTasks();
+      const idx = currentTasks.findIndex(x => x.id === taskId);
+      if (idx !== -1) {
+        currentTasks[idx] = { ...currentTasks[idx], status: newStatus, progress: finalProgress };
+        mockDb.setTasks(currentTasks);
+      }
     }
+
+    // Auto-calculate total project progress based on average task progress
+    await recalculateProjectProgress(t.project_id, taskId, finalProgress);
+    loadData();
   };
 
-  const recalculateProjectProgress = (projId: string) => {
-    const currentTasks = mockDb.getTasks();
-    const projTasks = currentTasks.filter(t => t.project_id === projId);
+  const recalculateProjectProgress = async (projId: string, changedTaskId?: string, changedProgress?: number) => {
+    const baseTasks = isRealSupabaseConfigured ? tasks : mockDb.getTasks();
+    const projTasks = baseTasks
+      .filter(t => t.project_id === projId)
+      .map(t => (changedTaskId && t.id === changedTaskId ? { ...t, progress: changedProgress ?? t.progress } : t));
+
     if (projTasks.length > 0) {
       const avgProgress = projTasks.reduce((sum, t) => sum + t.progress, 0) / projTasks.length;
       const rounded = Math.round(avgProgress);
-      const currentProjs = mockDb.getProjects();
-      const pIdx = currentProjs.findIndex(p => p.id === projId);
-      if (pIdx !== -1) {
-        currentProjs[pIdx] = {
-          ...currentProjs[pIdx],
-          progress: rounded,
-          // Auto-complete the project once progress hits 100%
-          status: rounded === 100 ? 'concluido' : currentProjs[pIdx].status
-        };
-        mockDb.setProjects(currentProjs);
+      const proj = projects.find(p => p.id === projId);
+      const newStatus = rounded === 100 ? 'concluido' : proj?.status;
+
+      if (isRealSupabaseConfigured && realSupabase) {
+        await realSupabase.from('projects').update({ progress: rounded, status: newStatus }).eq('id', projId);
+      } else {
+        const currentProjs = mockDb.getProjects();
+        const pIdx = currentProjs.findIndex(p => p.id === projId);
+        if (pIdx !== -1) {
+          currentProjs[pIdx] = { ...currentProjs[pIdx], progress: rounded, status: newStatus || currentProjs[pIdx].status };
+          mockDb.setProjects(currentProjs);
+        }
       }
     }
   };
 
   // Manually override a project's progress (independent of task averages)
-  const handleUpdateProjectProgress = (projId: string, newProgress: number) => {
+  const handleUpdateProjectProgress = async (projId: string, newProgress: number) => {
     const clamped = Math.max(0, Math.min(100, Math.round(newProgress)));
-    const currentProjs = mockDb.getProjects();
-    const idx = currentProjs.findIndex(p => p.id === projId);
-    if (idx !== -1) {
-      currentProjs[idx] = {
-        ...currentProjs[idx],
-        progress: clamped,
-        // Auto-complete the project once progress hits 100%
-        status: clamped === 100 ? 'concluido' : currentProjs[idx].status
-      };
-      mockDb.setProjects(currentProjs);
-      loadData();
+    const proj = projects.find(p => p.id === projId);
+    const newStatus = clamped === 100 ? 'concluido' : proj?.status;
+
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('projects').update({ progress: clamped, status: newStatus }).eq('id', projId);
+      if (error) console.error('Erro ao atualizar progresso:', error);
+    } else {
+      const currentProjs = mockDb.getProjects();
+      const idx = currentProjs.findIndex(p => p.id === projId);
+      if (idx !== -1) {
+        currentProjs[idx] = { ...currentProjs[idx], progress: clamped, status: newStatus || currentProjs[idx].status };
+        mockDb.setProjects(currentProjs);
+      }
     }
+    loadData();
     setEditingProgressProjId(null);
   };
 
@@ -842,23 +970,32 @@ export default function App() {
   };
 
   // Save changes made in the edit modal
-  const handleUpdateProject = (e: React.FormEvent) => {
+  const handleUpdateProject = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editProjId || !editProjName.trim()) return;
 
-    const currentProjs = mockDb.getProjects();
-    const idx = currentProjs.findIndex(p => p.id === editProjId);
-    if (idx !== -1) {
-      currentProjs[idx] = {
-        ...currentProjs[idx],
-        name: editProjName.trim(),
-        client_name: editProjClient.trim() || null,
-        address: editProjAddress.trim() || null,
-        deadline: editProjDeadline || null,
-        description: editProjDesc.trim() || null,
-        cover_image: editProjCoverImage || null
-      };
-      mockDb.setProjects(currentProjs);
+    const payload = {
+      name: editProjName.trim(),
+      client_name: editProjClient.trim() || null,
+      address: editProjAddress.trim() || null,
+      deadline: editProjDeadline || null,
+      description: editProjDesc.trim() || null,
+    };
+
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('projects').update(payload).eq('id', editProjId);
+      if (error) {
+        console.error('Erro ao editar obra:', error);
+        alert('Não foi possível salvar as alterações: ' + error.message);
+        return;
+      }
+    } else {
+      const currentProjs = mockDb.getProjects();
+      const idx = currentProjs.findIndex(p => p.id === editProjId);
+      if (idx !== -1) {
+        currentProjs[idx] = { ...currentProjs[idx], ...payload, cover_image: editProjCoverImage || null };
+        mockDb.setProjects(currentProjs);
+      }
     }
 
     setShowEditProject(false);
@@ -867,18 +1004,29 @@ export default function App() {
   };
 
   // Delete a project and clean up everything linked to it
-  const handleDeleteProject = (projId: string) => {
+  const handleDeleteProject = async (projId: string) => {
     const proj = projects.find(p => p.id === projId);
     const confirmed = window.confirm(
       `Tem certeza que deseja excluir a obra "${proj?.name || ''}"? Essa ação não pode ser desfeita e removerá também suas tarefas, materiais, equipe e mensagens.`
     );
     if (!confirmed) return;
 
-    mockDb.setProjects(mockDb.getProjects().filter(p => p.id !== projId));
-    mockDb.setTasks(mockDb.getTasks().filter(t => t.project_id !== projId));
-    mockDb.setMaterials(mockDb.getMaterials().filter(m => m.project_id !== projId));
-    mockDb.setMembers(mockDb.getMembers().filter(m => m.project_id !== projId));
-    mockDb.setMessages(mockDb.getMessages().filter(msg => msg.project_id !== projId));
+    if (isRealSupabaseConfigured && realSupabase) {
+      // As tabelas filhas têm ON DELETE CASCADE, então excluir a obra já
+      // remove tarefas, materiais, membros e mensagens vinculados
+      const { error } = await realSupabase.from('projects').delete().eq('id', projId);
+      if (error) {
+        console.error('Erro ao excluir obra:', error);
+        alert('Não foi possível excluir a obra: ' + error.message);
+        return;
+      }
+    } else {
+      mockDb.setProjects(mockDb.getProjects().filter(p => p.id !== projId));
+      mockDb.setTasks(mockDb.getTasks().filter(t => t.project_id !== projId));
+      mockDb.setMaterials(mockDb.getMaterials().filter(m => m.project_id !== projId));
+      mockDb.setMembers(mockDb.getMembers().filter(m => m.project_id !== projId));
+      mockDb.setMessages(mockDb.getMessages().filter(msg => msg.project_id !== projId));
+    }
 
     if (selectedProjectId === projId) setSelectedProjectId(null);
     loadData();
@@ -974,8 +1122,7 @@ export default function App() {
       setActiveTimerTaskId(null);
       return;
     }
-    const currentTasks = mockDb.getTasks();
-    const task = currentTasks.find(t => t.id === taskId);
+    const task = tasks.find(t => t.id === taskId);
     const proj = projects.find(p => p.id === task?.project_id);
     
     // Log hours
@@ -997,36 +1144,6 @@ export default function App() {
     return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Profile customization role switching
-  const handleRoleChange = (newRole: UserRole) => {
-    if (profile) {
-      const updatedProfile = { ...profile, role: newRole };
-      const profiles = mockDb.getProfiles();
-      const idx = profiles.findIndex(p => p.id === profile.id);
-      if (idx !== -1) {
-        profiles[idx] = updatedProfile;
-        mockDb.setProfiles(profiles);
-        localStorage.setItem('mock_active_user', JSON.stringify(updatedProfile));
-        loadData();
-        // Force refresh
-        window.dispatchEvent(new Event('storage'));
-      }
-    }
-  };
-
-  // Create dynamic sample notification for simulation
-  const simulateMaterialStockOut = () => {
-    if (projects.length === 0) return;
-    const randomProj = projects[Math.floor(Math.random() * projects.length)];
-    triggerNotification(
-      'material_low',
-      'ALERTA: Estoque Crítico',
-      `O cimento ensacado está acabando na obra ${randomProj.name}. Restam apenas 5 sacos na frente de serviço!`,
-      randomProj.id,
-      randomProj.name
-    );
-  };
-
   const markAllAsRead = () => {
     const current = mockDb.getNotifications().map(n => ({ ...n, read: true }));
     mockDb.setNotifications(current);
@@ -1044,7 +1161,7 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-background flex flex-col items-center justify-center">
+      <div className="min-h-screen bg-background safe-area-top flex flex-col items-center justify-center">
         <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
         <p className="mt-4 text-text-secondary font-medium animate-pulse">Iniciando PHD Gestões...</p>
       </div>
@@ -1056,7 +1173,7 @@ export default function App() {
   // ==========================================
   if (!session) {
     return (
-      <div className="min-h-screen bg-background flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
+      <div className="min-h-screen bg-background safe-area-top safe-area-bottom flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
         <div className="sm:mx-auto sm:w-full sm:max-w-md text-center">
           <div className="mx-auto h-16 w-16 rounded-2xl overflow-hidden shadow-lg shadow-primary/20 relative group border border-primary/20">
             <img src={appIcon} alt="PHD Gestões" className="w-full h-full object-cover relative z-10 transition-transform duration-500 group-hover:scale-110" />
@@ -1208,38 +1325,26 @@ export default function App() {
               </button>
             </form>
 
-            <div className="relative my-6">
-              <div className="absolute inset-0 flex items-center" aria-hidden="true">
-                <div className="w-full border-t border-border"></div>
-              </div>
-              <div className="relative flex justify-center text-xs font-bold uppercase tracking-widest">
-                <span className="bg-surface px-3 text-text-light">Acesso Rápido de Teste</span>
-              </div>
-            </div>
+            {!isRealSupabaseConfigured && (
+              <>
+                <div className="relative my-6">
+                  <div className="absolute inset-0 flex items-center" aria-hidden="true">
+                    <div className="w-full border-t border-border"></div>
+                  </div>
+                  <div className="relative flex justify-center text-xs font-bold uppercase tracking-widest">
+                    <span className="bg-surface px-3 text-text-light">Acesso Rápido de Teste</span>
+                  </div>
+                </div>
 
-            {/* Quick Demo logins */}
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => handleQuickLogin('engenheiro')}
-                className="p-2.5 text-left rounded-xl bg-surface-alt hover:bg-input-bg border border-border transition"
-              >
-                <div className="text-xs font-bold text-primary">Eng. João Silva</div>
-                <div className="text-[10px] text-text-light font-medium">Gestor Geral</div>
-              </button>
-              <button
-                onClick={() => handleQuickLogin('mestre_obra')}
-                className="p-2.5 text-left rounded-xl bg-surface-alt hover:bg-input-bg border border-border transition"
-              >
-                <div className="text-xs font-bold text-success">Mestre Pedro</div>
-                <div className="text-[10px] text-text-light font-medium">Líder de Canteiro</div>
-              </button>
-              <button
-                onClick={() => handleQuickLogin('encarregado')}
-                className="p-2.5 text-left rounded-xl bg-surface-alt hover:bg-input-bg border border-border transition col-span-2"
-              >
-                <div className="text-xs font-bold text-warning text-center">Entrar como Carlos Santos (Encarregado)</div>
-              </button>
-            </div>
+                <button
+                  onClick={handleQuickLogin}
+                  className="w-full p-2.5 text-left rounded-xl bg-surface-alt hover:bg-input-bg border border-border transition"
+                >
+                  <div className="text-xs font-bold text-primary">Eng. João Silva</div>
+                  <div className="text-[10px] text-text-light font-medium">Gestor Geral</div>
+                </button>
+              </>
+            )}
 
           </div>
         </div>
@@ -1351,12 +1456,6 @@ export default function App() {
         {/* Footer actions */}
         <div className="p-4 border-t border-sidebar-light space-y-2">
           <button 
-            onClick={simulateMaterialStockOut}
-            className="w-full text-center py-2 px-3 rounded-lg border border-accent/20 bg-accent/5 hover:bg-accent/10 text-[10px] text-accent-light font-bold uppercase tracking-wider transition"
-          >
-            ⚠️ Simular Estoque Baixo
-          </button>
-          <button 
             onClick={signOut}
             className="w-full flex items-center justify-center gap-2 py-2.5 text-xs font-bold uppercase tracking-wider rounded-lg text-error hover:bg-error-light hover:text-error transition"
           >
@@ -1367,7 +1466,7 @@ export default function App() {
       </aside>
       
       {/* MOBILE BOTTOM NAVIGATION BAR */}
-      <div className="md:hidden bg-surface border-t border-border flex justify-around p-2 fixed bottom-0 left-0 right-0 z-40 shadow-lg">
+      <div className="md:hidden bg-surface border-t border-border flex justify-around p-2 pt-2 safe-area-bottom fixed bottom-0 left-0 right-0 z-40 shadow-lg">
         <button 
           onClick={() => { setActiveTab('projects'); setSelectedProjectId(null); }}
           className={`flex flex-col items-center gap-1 ${activeTab === 'projects' ? 'text-primary' : 'text-text-light'}`}
@@ -1406,7 +1505,7 @@ export default function App() {
       </div>
 
       {/* MAIN CONTENT AREA */}
-      <main className="flex-1 p-4 md:p-8 overflow-y-auto pb-20 md:pb-8">
+      <main className="flex-1 p-4 md:p-8 safe-area-top overflow-y-auto pb-20 md:pb-8">
         
         {/* AUTOMATIC DEVICE CLOCK, DATE AND WEATHER FORECAST STATUS BAR */}
         {profile && (
@@ -1712,14 +1811,23 @@ export default function App() {
                     <div className="flex flex-wrap items-center gap-2">
                       <select
                         value={proj.status}
-                        onChange={(e) => {
-                          const currentProjs = [...projects];
-                          const idx = currentProjs.findIndex(p => p.id === proj.id);
-                          if (idx !== -1) {
-                            currentProjs[idx].status = e.target.value as any;
-                            mockDb.setProjects(currentProjs);
-                            loadData();
+                        onChange={async (e) => {
+                          const newStatus = e.target.value;
+                          if (isRealSupabaseConfigured && realSupabase) {
+                            const { error } = await realSupabase.from('projects').update({ status: newStatus }).eq('id', proj.id);
+                            if (error) {
+                              console.error('Erro ao atualizar status da obra:', error);
+                              return;
+                            }
+                          } else {
+                            const currentProjs = [...projects];
+                            const idx = currentProjs.findIndex(p => p.id === proj.id);
+                            if (idx !== -1) {
+                              currentProjs[idx].status = newStatus as any;
+                              mockDb.setProjects(currentProjs);
+                            }
                           }
+                          loadData();
                         }}
                         disabled={!(profile?.role === 'engenheiro' || profile?.role === 'mestre_obra')}
                         className="text-xs font-bold px-3 py-2 rounded-xl border border-border text-text focus:outline-none"
@@ -1991,8 +2099,8 @@ export default function App() {
 
                     <div className="space-y-3">
                       {(() => {
-                        const projectMembers = mockDb.getMembers().filter(m => m.project_id === selectedProjectId);
-                        const userProfiles = projectMembers.map(m => team.find(t => t.id === m.user_id)).filter(Boolean) as Profile[];
+                        const currentProjectMembers = projectMembers.filter(m => m.project_id === selectedProjectId);
+                        const userProfiles = currentProjectMembers.map(m => team.find(t => t.id === m.user_id)).filter(Boolean) as Profile[];
 
                         return userProfiles.slice(0, 3).map(member => (
                           <div key={member.id} className="flex items-center gap-3">
@@ -2255,8 +2363,8 @@ export default function App() {
                 </div>
 
                 {(() => {
-                  const projectMembers = mockDb.getMembers().filter(m => m.project_id === selectedProjectId);
-                  const userProfiles = projectMembers.map(m => team.find(t => t.id === m.user_id)).filter(Boolean) as Profile[];
+                  const currentProjectMembers = projectMembers.filter(m => m.project_id === selectedProjectId);
+                  const userProfiles = currentProjectMembers.map(m => team.find(t => t.id === m.user_id)).filter(Boolean) as Profile[];
 
                   return (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -2272,12 +2380,25 @@ export default function App() {
                           {/* Quick remove from project member */}
                           {(profile?.role === 'engenheiro' || profile?.role === 'admin') && member.id !== profile?.id && (
                             <button
-                              onClick={() => {
-                                if (confirm(`Deseja desvincular ${member.full_name} desta obra?`)) {
+                              onClick={async () => {
+                                if (!confirm(`Deseja desvincular ${member.full_name} desta obra?`)) return;
+
+                                if (isRealSupabaseConfigured && realSupabase) {
+                                  const { error } = await realSupabase
+                                    .from('project_members')
+                                    .delete()
+                                    .eq('project_id', selectedProjectId)
+                                    .eq('user_id', member.id);
+                                  if (error) {
+                                    console.error('Erro ao remover integrante:', error);
+                                    alert('Não foi possível remover o integrante: ' + error.message);
+                                    return;
+                                  }
+                                } else {
                                   const current = mockDb.getMembers().filter(m => !(m.project_id === selectedProjectId && m.user_id === member.id));
                                   mockDb.setMembers(current);
-                                  loadData();
                                 }
+                                loadData();
                               }}
                               className="text-text-light hover:text-error transition p-1"
                               title="Remover integrante"
@@ -2984,41 +3105,15 @@ export default function App() {
                 <span className="text-xs font-bold uppercase tracking-wider text-text-secondary">Função Ativa: {ROLE_LABELS[profile?.role || 'funcionario']}</span>
               </div>
 
-              {/* Fast interactive role Switcher - for demonstration of layout behaviors */}
-              <div className="p-4 bg-surface-alt rounded-2xl border border-border text-left space-y-3">
-                <div className="flex gap-1.5 items-center">
-                  <Sliders size={16} className="text-primary" />
-                  <span className="text-xs font-bold text-secondary uppercase">Alternador Rápido de Permissões</span>
-                </div>
-                <p className="text-[11px] text-text-secondary leading-normal">
-                  Como este aplicativo está operando em sandbox simulado, você pode alternar livremente entre as permissões para ver como cada colaborador interage com as obras, materiais e registro de ponto de trabalho!
-                </p>
-                <div className="flex flex-wrap gap-2 pt-1">
-                  {(['engenheiro', 'mestre_obra', 'encarregado', 'funcionario'] as UserRole[]).map(r => (
-                    <button
-                      key={r}
-                      onClick={() => handleRoleChange(r)}
-                      className={`px-3 py-1.5 text-xs font-bold rounded-xl transition ${
-                        profile?.role === r 
-                          ? 'bg-primary text-white shadow-sm' 
-                          : 'bg-surface hover:bg-input-bg border border-border text-text-secondary'
-                      }`}
-                    >
-                      {ROLE_LABELS[r]}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
               {/* User stats */}
               <div className="grid grid-cols-2 gap-4 text-left">
                 <div className="p-4 bg-background rounded-xl border border-border space-y-0.5">
                   <span className="text-[10px] text-text-light font-bold uppercase tracking-wider">E-mail de Trabalho</span>
-                  <p className="text-xs font-bold text-secondary">{profile?.id}@obras.com</p>
+                  <p className="text-xs font-bold text-secondary">{session?.user?.email || `${profile?.id}@obras.com`}</p>
                 </div>
                 <div className="p-4 bg-background rounded-xl border border-border space-y-0.5">
                   <span className="text-[10px] text-text-light font-bold uppercase tracking-wider">Telefone de Contato</span>
-                  <p className="text-xs font-bold text-secondary">{profile?.phone || '(11) 98765-4321'}</p>
+                  <p className="text-xs font-bold text-secondary">{profile?.phone || 'Não informado'}</p>
                 </div>
               </div>
 
@@ -3436,44 +3531,128 @@ export default function App() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in">
           <div className="bg-surface rounded-2xl border border-border w-full max-w-sm shadow-xl overflow-hidden">
             <div className="flex justify-between items-center p-5 border-b border-border">
-              <h4 className="font-bold text-lg text-secondary font-display">Designar Integrante</h4>
-              <button onClick={() => setShowInviteMember(false)} className="text-text-light hover:text-text-secondary">
+              <h4 className="font-bold text-lg text-secondary font-display">Adicionar à Equipe</h4>
+              <button onClick={() => { setShowInviteMember(false); setInviteMode('existing'); }} className="text-text-light hover:text-text-secondary">
                 <X size={20} />
               </button>
             </div>
-            
-            <form onSubmit={handleInviteMember} className="p-5 space-y-4">
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-text-secondary mb-1">Selecionar Profissional *</label>
-                <select
-                  required
-                  value={inviteUserId}
-                  onChange={(e) => setInviteUserId(e.target.value)}
-                  className="w-full px-4 py-2 text-sm rounded-xl border border-border bg-surface-alt text-text focus:outline-none focus:ring-2 focus:ring-primary/20"
-                >
-                  <option value="">Selecione o profissional...</option>
-                  {team.map(u => (
-                    <option key={u.id} value={u.id}>{u.full_name} ({ROLE_LABELS[u.role]})</option>
-                  ))}
-                </select>
-              </div>
 
-              <div className="flex gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowInviteMember(false)}
-                  className="flex-1 py-2.5 border border-border bg-surface hover:bg-input-bg text-text-secondary text-sm font-semibold rounded-xl transition"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="flex-1 py-2.5 bg-primary hover:bg-primary-dark text-white text-sm font-semibold rounded-xl transition shadow-md"
-                >
-                  Designar
-                </button>
-              </div>
-            </form>
+            <div className="px-5 pt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setInviteMode('existing')}
+                className={`flex-1 py-2 text-xs font-bold rounded-xl transition ${
+                  inviteMode === 'existing' ? 'bg-primary text-white shadow-sm' : 'bg-surface-alt border border-border text-text-secondary hover:bg-input-bg'
+                }`}
+              >
+                Já Tem Conta
+              </button>
+              <button
+                type="button"
+                onClick={() => setInviteMode('new')}
+                className={`flex-1 py-2 text-xs font-bold rounded-xl transition ${
+                  inviteMode === 'new' ? 'bg-primary text-white shadow-sm' : 'bg-surface-alt border border-border text-text-secondary hover:bg-input-bg'
+                }`}
+              >
+                Novo Funcionário
+              </button>
+            </div>
+
+            {inviteMode === 'existing' ? (
+              <form onSubmit={handleInviteMember} className="p-5 space-y-4">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-text-secondary mb-1">Selecionar Profissional *</label>
+                  <select
+                    required
+                    value={inviteUserId}
+                    onChange={(e) => setInviteUserId(e.target.value)}
+                    className="w-full px-4 py-2 text-sm rounded-xl border border-border bg-surface-alt text-text focus:outline-none focus:ring-2 focus:ring-primary/20"
+                  >
+                    <option value="">Selecione o profissional...</option>
+                    {team.map(u => (
+                      <option key={u.id} value={u.id}>{u.full_name} ({ROLE_LABELS[u.role]})</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => { setShowInviteMember(false); setInviteMode('existing'); }}
+                    className="flex-1 py-2.5 border border-border bg-surface hover:bg-input-bg text-text-secondary text-sm font-semibold rounded-xl transition"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex-1 py-2.5 bg-primary hover:bg-primary-dark text-white text-sm font-semibold rounded-xl transition shadow-md"
+                  >
+                    Designar
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <form onSubmit={handleAddNewEmployee} className="p-5 space-y-4">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-text-secondary mb-1">Nome Completo *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ex: Carlos Augusto"
+                    value={newEmployeeName}
+                    onChange={(e) => setNewEmployeeName(e.target.value)}
+                    className="w-full px-4 py-2.5 rounded-xl border border-border bg-surface-alt text-text focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-text-secondary mb-1">Telefone</label>
+                  <input
+                    type="text"
+                    placeholder="(11) 99999-9999"
+                    value={newEmployeePhone}
+                    onChange={(e) => setNewEmployeePhone(e.target.value)}
+                    className="w-full px-4 py-2.5 rounded-xl border border-border bg-surface-alt text-text focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-text-secondary mb-2">Cargo *</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {(['engenheiro', 'mestre_obra', 'encarregado', 'funcionario'] as UserRole[]).map((r) => (
+                      <button
+                        type="button"
+                        key={r}
+                        onClick={() => setNewEmployeeRole(r)}
+                        className={`px-3 py-2 text-xs font-semibold rounded-lg border transition text-center ${
+                          newEmployeeRole === r
+                            ? 'bg-primary border-primary text-white'
+                            : 'border-border bg-surface-alt text-text-secondary hover:bg-input-bg'
+                        }`}
+                      >
+                        {ROLE_LABELS[r]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => { setShowInviteMember(false); setInviteMode('existing'); }}
+                    className="flex-1 py-2.5 border border-border bg-surface hover:bg-input-bg text-text-secondary text-sm font-semibold rounded-xl transition"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex-1 py-2.5 bg-primary hover:bg-primary-dark text-white text-sm font-semibold rounded-xl transition shadow-md"
+                  >
+                    Cadastrar
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}

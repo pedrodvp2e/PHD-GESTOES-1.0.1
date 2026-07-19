@@ -64,6 +64,21 @@ body {
   color-scheme: light dark;
 }
 
+/*
+  Modo tela infinita (edge-to-edge): como o conteúdo passa a se estender
+  por trás da barra de status e da área de gestos do Android, usamos as
+  variáveis de "safe area" para garantir que nada fique escondido atrás
+  delas — com um valor mínimo de segurança para aparelhos que não
+  reportam a medida corretamente.
+*/
+.safe-area-top {
+  padding-top: max(env(safe-area-inset-top), 20px);
+}
+
+.safe-area-bottom {
+  padding-bottom: max(env(safe-area-inset-bottom), 12px);
+}
+
 /* Animations */
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(8px); }
