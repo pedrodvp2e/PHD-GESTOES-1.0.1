@@ -460,6 +460,7 @@ export default function App() {
       );
     } catch (err: any) {
       console.error('Erro ao compartilhar relatório:', err);
+      alert('Erro ao compartilhar: ' + (err && err.message ? err.message : String(err)));
     } finally {
       setSharingReport(false);
       setReportProjectId(null);
@@ -492,6 +493,7 @@ export default function App() {
       );
     } catch (err: any) {
       console.error('Erro ao compartilhar relatório em PDF:', err);
+      alert('Erro ao compartilhar: ' + (err && err.message ? err.message : String(err)));
     } finally {
       setSharingPdfReport(false);
       setPdfReportProjectId(null);
