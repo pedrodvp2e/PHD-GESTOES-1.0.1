@@ -20,6 +20,7 @@ export interface Project {
   deadline: string | null;
   progress: number;
   cover_image?: string | null;
+  project_pdf?: string | null;
   created_by: string | null;
   created_at: string;
 }
@@ -88,4 +89,55 @@ export interface LocalNotification {
   projectName: string;
   createdAt: string;
   read: boolean;
+}
+
+export interface DiaryEntry {
+  id: string;
+  project_id: string;
+  entry_date: string; // YYYY-MM-DD
+  weather: 'sol' | 'nublado' | 'chuva' | 'tempestade' | null;
+  workers_count: number | null;
+  description: string;
+  occurrences: string | null; // ocorrências/problemas do dia
+  photo?: string | null; // base64
+  created_by: string | null;
+  created_at: string;
+}
+
+export const DEFAULT_SAFETY_ITEMS = [
+  'Capacete de segurança',
+  'Óculos de proteção',
+  'Luvas de proteção',
+  'Botina de segurança',
+  'Protetor auricular',
+  'Cinto de segurança (trabalho em altura)',
+  'Máscara respiratória',
+  'Sinalização do canteiro',
+  'Extintor de incêndio disponível',
+  'Kit de primeiros socorros',
+];
+
+export interface SafetyChecklistItem {
+  id: string;
+  project_id: string;
+  label: string;
+  completed: boolean;
+  checked_by: string | null;
+  checked_at: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface IncidentReport {
+  id: string;
+  project_id: string;
+  occurred_at: string; // YYYY-MM-DD
+  type: 'acidente' | 'quase_acidente' | 'ocorrencia';
+  severity: 'leve' | 'moderada' | 'grave';
+  description: string;
+  injured_person: string | null;
+  action_taken: string | null;
+  photo?: string | null; // base64
+  created_by: string | null;
+  created_at: string;
 }

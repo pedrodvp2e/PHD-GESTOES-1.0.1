@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Building2, HardHat, Package, ClipboardList, Users, Bell, User, 
   Plus, MapPin, Calendar, ChevronRight, X, ArrowRight, Eye, EyeOff, 
@@ -6,13 +6,24 @@ import {
   Search, Sliders, LogOut, CheckSquare, MessageSquare, Briefcase,
   Trash2, Volume2, VolumeX, Sparkles, Filter, Info,
   Sun, Cloud, CloudSun, CloudFog, CloudDrizzle, CloudRain, CloudLightning, Navigation,
-  Camera, Loader2, Phone, MessageCircle
+  Camera, Loader2, Phone, MessageCircle, Share2, FileText, Upload, ShieldCheck, Home
 } from 'lucide-react';
 import { useAuth } from './lib/auth';
-import { requestNotificationPermission, sendNativeNotification } from './lib/notifications';
+import { requestNotificationPermission, sendNativeNotification, scheduleMonthlyReportReminder } from './lib/notifications';
+import { getNotificationPermissionStatus, NATIVE_RESOURCES, NativePermissionStatus } from './lib/permissions';
+import {
+  isAppLockEnabled, setAppLockEnabled, isDeviceSecurityAvailable, verifyDeviceSecurity,
+  hasAskedAboutAppLock, setAskedAboutAppLock, DeviceSecurityResult,
+} from './lib/appLock';
+import AppLockScreen from './AppLockScreen';
+import AppLockOfferScreen from './AppLockOfferScreen';
+import { shareElementAsImage } from './lib/shareReport';
+import { shareElementAsPdf } from './lib/sharePdfReport';
+import { getProgressForecast } from './lib/progressForecast';
+import { extractInvoiceText, parseInvoiceMaterials, InvoiceMaterialCandidate } from './lib/ocrInvoice';
 import appIcon from './assets/images/icon.png';
 import { supabase, mockDb, ROLE_LABELS, ROLE_COLORS, STATUS_LABELS, STATUS_COLORS, uploadAvatar, isRealSupabaseConfigured, realSupabase } from './lib/supabase';
-import { Project, Task, Material, Message, LocalNotification, UserRole, Profile, ProjectMember } from './types';
+import { Project, Task, Material, Message, LocalNotification, UserRole, Profile, ProjectMember, DiaryEntry, SafetyChecklistItem, IncidentReport, DEFAULT_SAFETY_ITEMS } from './types';
 
 export default function App() {
   const { session, profile, loading, signIn, signUp, signOut, refreshProfile } = useAuth();
@@ -47,11 +58,14 @@ export default function App() {
     }
     setAvatarUploading(false);
   };
-  const [activeTab, setActiveTab] = useState<'projects' | 'materials' | 'tasks' | 'team' | 'notifications' | 'profile'>('projects');
+  const [activeTab, setActiveTab] = useState<'inicio' | 'projects' | 'materials' | 'tasks' | 'team' | 'notifications' | 'profile'>('inicio');
+  const [reportProjectId, setReportProjectId] = useState<string | null>(null);
+  const [sharingReport, setSharingReport] = useState(false);
+  const reportCardRef = useRef<HTMLDivElement>(null);
   
   // Drill-down project view
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [projectSubTab, setProjectSubTab] = useState<'overview' | 'tasks' | 'materials' | 'team' | 'messages'>('overview');
+  const [projectSubTab, setProjectSubTab] = useState<'overview' | 'tasks' | 'materials' | 'diary' | 'safety' | 'team' | 'messages'>('overview');
 
   // Authentication mode and form states
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
@@ -68,6 +82,9 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [materials, setMaterials] = useState<Material[]>([]);
+  const [diaryEntries, setDiaryEntries] = useState<DiaryEntry[]>([]);
+  const [safetyItems, setSafetyItems] = useState<SafetyChecklistItem[]>([]);
+  const [incidents, setIncidents] = useState<IncidentReport[]>([]);
   const [team, setTeam] = useState<Profile[]>([]);
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
   const [notifications, setNotifications] = useState<LocalNotification[]>([]);
@@ -139,7 +156,6 @@ export default function App() {
   const [weatherLoading, setWeatherLoading] = useState(false);
   const [weatherError, setWeatherError] = useState<string | null>(null);
   const [permissionStatus, setPermissionStatus] = useState<'prompt' | 'granted' | 'denied' | 'requesting'>('prompt');
-  const [showAndroidPermissionModal, setShowAndroidPermissionModal] = useState(false);
 
   // Load and subscribe to DB data
   // Quando o Supabase real está configurado, cada conta enxerga somente os
@@ -156,6 +172,9 @@ export default function App() {
           { data: profilesData },
           { data: messagesData },
           { data: membersData },
+          { data: diaryData },
+          { data: safetyData },
+          { data: incidentsData },
         ] = await Promise.all([
           realSupabase.from('projects').select('*').order('created_at', { ascending: false }),
           realSupabase.from('tasks').select('*'),
@@ -163,6 +182,9 @@ export default function App() {
           realSupabase.from('profiles').select('*'),
           realSupabase.from('messages').select('*').order('created_at', { ascending: true }),
           realSupabase.from('project_members').select('*'),
+          realSupabase.from('diary_entries').select('*').order('entry_date', { ascending: false }),
+          realSupabase.from('safety_checklist_items').select('*'),
+          realSupabase.from('incidents').select('*').order('occurred_at', { ascending: false }),
         ]);
 
         setProjects((projectsData as Project[]) || []);
@@ -171,6 +193,9 @@ export default function App() {
         setTeam((profilesData as Profile[]) || []);
         setMessages((messagesData as Message[]) || []);
         setProjectMembers((membersData as ProjectMember[]) || []);
+        setDiaryEntries((diaryData as DiaryEntry[]) || []);
+        setSafetyItems((safetyData as SafetyChecklistItem[]) || []);
+        setIncidents((incidentsData as IncidentReport[]) || []);
         // Notificações permanecem locais ao dispositivo (não há tabela no banco)
         setNotifications(mockDb.getNotifications());
       } catch (err) {
@@ -187,12 +212,79 @@ export default function App() {
     setNotifications(mockDb.getNotifications());
     setMessages(mockDb.getMessages());
     setProjectMembers(mockDb.getMembers());
+    setDiaryEntries(mockDb.getDiaryEntries());
+    setSafetyItems(mockDb.getSafetyItems());
+    setIncidents(mockDb.getIncidents());
+  };
+
+  // Segurança e Permissões: status da permissão nativa de notificações
+  const [notifPermStatus, setNotifPermStatus] = useState<NativePermissionStatus>('web');
+
+  const refreshNotifPermStatus = async () => {
+    setNotifPermStatus(await getNotificationPermissionStatus());
+  };
+
+  // Bloqueio de segurança do app: usa só os recursos nativos do Android
+  // (digital, rosto, PIN, padrão ou senha que o usuário já configurou no aparelho)
+  const [appLockOn, setAppLockOn] = useState(false);
+  const [appUnlocked, setAppUnlocked] = useState(false);
+  const [deviceSecurityAvailable, setDeviceSecurityAvailable] = useState(false);
+  const [showAppLockOffer, setShowAppLockOffer] = useState(false);
+
+  useEffect(() => {
+    if (!profile?.id) return;
+    const enabled = isAppLockEnabled(profile.id);
+    setAppLockOn(enabled);
+    setAppUnlocked(!enabled);
+
+    isDeviceSecurityAvailable().then((available) => {
+      setDeviceSecurityAvailable(available);
+      // Primeira vez que este usuário abre o app: oferece ativar o bloqueio
+      if (available && !enabled && !hasAskedAboutAppLock(profile.id)) {
+        setShowAppLockOffer(true);
+      }
+    });
+  }, [profile?.id]);
+
+  const handleToggleAppLock = async (enabled: boolean) => {
+    if (!profile?.id) return;
+    if (enabled) {
+      const result = await verifyDeviceSecurity('Confirme sua identidade para ativar o bloqueio de segurança');
+      if (!result.success) {
+        if (result.reason === 'not_enrolled') {
+          alert('Seu Android ainda não tem nenhuma digital, PIN ou padrão configurados. Vá em Configurações do Android → Segurança → Bloqueio de tela, configure uma trava e tente novamente.');
+        }
+        return;
+      }
+    }
+    setAppLockEnabled(profile.id, enabled);
+    setAppLockOn(enabled);
+  };
+
+  // Ativa o bloqueio a partir da tela de oferta de primeiro acesso
+  const handleActivateAppLockFromOffer = async (): Promise<DeviceSecurityResult> => {
+    if (!profile?.id) return { success: false, reason: 'unknown' };
+    const result = await verifyDeviceSecurity('Confirme sua identidade para ativar o bloqueio de segurança');
+    if (result.success) {
+      setAppLockEnabled(profile.id, true);
+      setAppLockOn(true);
+      setAppUnlocked(true); // já confirmou a identidade agora, não precisa pedir de novo
+      setAskedAboutAppLock(profile.id);
+      setShowAppLockOffer(false);
+    }
+    return result;
+  };
+
+  const handleDismissAppLockOffer = () => {
+    if (!profile?.id) return;
+    setAskedAboutAppLock(profile.id);
+    setShowAppLockOffer(false);
   };
 
   useEffect(() => {
     loadData();
     // Pede permissão de notificações do sistema (Android/iOS) assim que o app abre
-    requestNotificationPermission();
+    requestNotificationPermission().then(refreshNotifPermStatus);
     // Synchronize updates on storage changes (or local action)
     const interval = setInterval(() => {
       setNotifications(mockDb.getNotifications());
@@ -312,7 +404,7 @@ export default function App() {
 
   const requestAndroidLocationPermission = () => {
     setPermissionStatus('requesting');
-    setShowAndroidPermissionModal(false);
+    localStorage.setItem('location_permission_prompted', 'true');
     
     if (!navigator.geolocation) {
       setPermissionStatus('denied');
@@ -347,6 +439,73 @@ export default function App() {
     );
   };
 
+  const handleShareProjectReport = async (proj: Project) => {
+    if (sharingReport) return;
+    setSharingReport(true);
+    try {
+      setReportProjectId(proj.id);
+      // Aguarda o card do relatório renderizar fora da tela antes de capturar
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+      if (!reportCardRef.current) {
+        throw new Error('Não foi possível preparar o relatório.');
+      }
+
+      const fileName = `relatorio-${proj.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now()}.png`;
+      await shareElementAsImage(
+        reportCardRef.current,
+        fileName,
+        `Relatório - ${proj.name}`,
+        `Relatório da obra "${proj.name}" gerado pelo app PHD Gestões.`
+      );
+    } catch (err: any) {
+      console.error('Erro ao compartilhar relatório:', err);
+    } finally {
+      setSharingReport(false);
+      setReportProjectId(null);
+    }
+  };
+
+  // Relatório PDF mensal da obra (mesmo card, exportado como PDF)
+  const [sharingPdfReport, setSharingPdfReport] = useState(false);
+  const [pdfReportProjectId, setPdfReportProjectId] = useState<string | null>(null);
+
+  const handleShareProjectPdfReport = async (proj: Project) => {
+    if (sharingPdfReport) return;
+    setSharingPdfReport(true);
+    try {
+      setPdfReportProjectId(proj.id);
+      setReportProjectId(proj.id);
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+      if (!reportCardRef.current) {
+        throw new Error('Não foi possível preparar o relatório.');
+      }
+
+      const monthLabel = new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+      const fileName = `relatorio-mensal-${proj.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now()}.pdf`;
+      await shareElementAsPdf(
+        reportCardRef.current,
+        fileName,
+        `Relatório Mensal - ${proj.name}`,
+        `Relatório mensal (${monthLabel}) da obra "${proj.name}" gerado pelo app PHD Gestões.`
+      );
+    } catch (err: any) {
+      console.error('Erro ao compartilhar relatório em PDF:', err);
+    } finally {
+      setSharingPdfReport(false);
+      setPdfReportProjectId(null);
+      setReportProjectId(null);
+    }
+  };
+
+  // Agenda o lembrete mensal de relatório para todas as obras ativas
+  useEffect(() => {
+    projects
+      .filter(p => p.status === 'em_andamento' || p.status === 'planejamento')
+      .forEach(p => { scheduleMonthlyReportReminder(p.id, p.name); });
+  }, [projects.length]);
+
   useEffect(() => {
     if (navigator.permissions && navigator.permissions.query) {
       navigator.permissions.query({ name: 'geolocation' as PermissionName }).then((result) => {
@@ -359,9 +518,10 @@ export default function App() {
           });
         } else {
           fetchWeatherByCoords(-23.5489, -46.6388, false);
-          if (result.state === 'prompt' && session) {
+          if (result.state === 'prompt' && session && !localStorage.getItem('location_permission_prompted')) {
             const t = setTimeout(() => {
-              setShowAndroidPermissionModal(true);
+              localStorage.setItem('location_permission_prompted', 'true');
+              requestAndroidLocationPermission();
             }, 1500);
             return () => clearTimeout(t);
           }
@@ -696,6 +856,222 @@ export default function App() {
       const proj = projects.find(p => p.id === selectedProjectId);
       triggerNotification('material_low', 'Suprimento Crítico', `O suprimento "${basePayload.name}" está com estoque crítico (menos de ${stockThreshold}% adquirido) na obra ${proj?.name}.`, selectedProjectId, proj?.name || '');
     }
+
+  };
+
+  // Create Diary Entry (Diário de Obra)
+  const [showCreateDiary, setShowCreateDiary] = useState(false);
+  const [newDiaryDate, setNewDiaryDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [newDiaryWeather, setNewDiaryWeather] = useState<'sol' | 'nublado' | 'chuva' | 'tempestade'>('sol');
+  const [newDiaryWorkers, setNewDiaryWorkers] = useState(0);
+  const [newDiaryDescription, setNewDiaryDescription] = useState('');
+  const [newDiaryOccurrences, setNewDiaryOccurrences] = useState('');
+  const [newDiaryPhoto, setNewDiaryPhoto] = useState<string | null>(null);
+
+  const handleCreateDiaryEntry = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newDiaryDescription.trim() || !selectedProjectId) return;
+
+    const basePayload = {
+      project_id: selectedProjectId,
+      entry_date: newDiaryDate,
+      weather: newDiaryWeather,
+      workers_count: Number(newDiaryWorkers) || null,
+      description: newDiaryDescription.trim(),
+      occurrences: newDiaryOccurrences.trim() || null,
+      photo: newDiaryPhoto,
+      created_by: profile?.id || 'guest',
+    };
+
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('diary_entries').insert(basePayload);
+      if (error) {
+        console.error('Erro ao registrar diário de obra:', error);
+        alert('Não foi possível registrar o diário: ' + error.message);
+        return;
+      }
+    } else {
+      const newEntry: DiaryEntry = { id: `diary-${Date.now()}`, created_at: new Date().toISOString(), ...basePayload };
+      const currentEntries = mockDb.getDiaryEntries();
+      currentEntries.unshift(newEntry);
+      mockDb.setDiaryEntries(currentEntries);
+    }
+
+    setNewDiaryDate(new Date().toISOString().slice(0, 10));
+    setNewDiaryWeather('sol');
+    setNewDiaryWorkers(0);
+    setNewDiaryDescription('');
+    setNewDiaryOccurrences('');
+    setNewDiaryPhoto(null);
+    setShowCreateDiary(false);
+    loadData();
+  };
+
+  const handleDiaryPhotoSelect = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => setNewDiaryPhoto(reader.result as string);
+    reader.readAsDataURL(file);
+  };
+
+  // Checklist de EPI e Segurança
+  const handleSeedSafetyChecklist = async (projectId: string) => {
+    const existing = safetyItems.filter(s => s.project_id === projectId);
+    if (existing.length > 0) return;
+
+    const itemsPayload = DEFAULT_SAFETY_ITEMS.map(label => ({
+      project_id: projectId,
+      label,
+      completed: false,
+      checked_by: null,
+      checked_at: null,
+      created_by: profile?.id || 'guest',
+    }));
+
+    if (isRealSupabaseConfigured && realSupabase) {
+      await realSupabase.from('safety_checklist_items').insert(itemsPayload);
+    } else {
+      const newItems: SafetyChecklistItem[] = itemsPayload.map(p => ({ id: `safety-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, created_at: new Date().toISOString(), ...p }));
+      const current = mockDb.getSafetyItems();
+      mockDb.setSafetyItems([...current, ...newItems]);
+    }
+    loadData();
+  };
+
+  const handleToggleSafetyItem = async (item: SafetyChecklistItem) => {
+    const nextCompleted = !item.completed;
+    const patch = { completed: nextCompleted, checked_by: profile?.id || null, checked_at: nextCompleted ? new Date().toISOString() : null };
+
+    if (isRealSupabaseConfigured && realSupabase) {
+      await realSupabase.from('safety_checklist_items').update(patch).eq('id', item.id);
+    } else {
+      const current = mockDb.getSafetyItems();
+      const idx = current.findIndex(s => s.id === item.id);
+      if (idx !== -1) { current[idx] = { ...current[idx], ...patch }; mockDb.setSafetyItems(current); }
+    }
+    loadData();
+  };
+
+  // Registro de Ocorrências/Acidentes
+  const [showCreateIncident, setShowCreateIncident] = useState(false);
+  const [newIncidentDate, setNewIncidentDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [newIncidentType, setNewIncidentType] = useState<'acidente' | 'quase_acidente' | 'ocorrencia'>('ocorrencia');
+  const [newIncidentSeverity, setNewIncidentSeverity] = useState<'leve' | 'moderada' | 'grave'>('leve');
+  const [newIncidentDescription, setNewIncidentDescription] = useState('');
+  const [newIncidentInjured, setNewIncidentInjured] = useState('');
+  const [newIncidentAction, setNewIncidentAction] = useState('');
+  const [newIncidentPhoto, setNewIncidentPhoto] = useState<string | null>(null);
+
+  const handleCreateIncident = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newIncidentDescription.trim() || !selectedProjectId) return;
+
+    const basePayload = {
+      project_id: selectedProjectId,
+      occurred_at: newIncidentDate,
+      type: newIncidentType,
+      severity: newIncidentSeverity,
+      description: newIncidentDescription.trim(),
+      injured_person: newIncidentInjured.trim() || null,
+      action_taken: newIncidentAction.trim() || null,
+      photo: newIncidentPhoto,
+      created_by: profile?.id || 'guest',
+    };
+
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('incidents').insert(basePayload);
+      if (error) {
+        console.error('Erro ao registrar ocorrência:', error);
+        alert('Não foi possível registrar a ocorrência: ' + error.message);
+        return;
+      }
+    } else {
+      const newIncident: IncidentReport = { id: `incident-${Date.now()}`, created_at: new Date().toISOString(), ...basePayload };
+      const current = mockDb.getIncidents();
+      current.unshift(newIncident);
+      mockDb.setIncidents(current);
+    }
+
+    // Ocorrências graves disparam notificação imediata
+    if (newIncidentSeverity === 'grave') {
+      const proj = projects.find(p => p.id === selectedProjectId);
+      triggerNotification('system', 'Ocorrência Grave Registrada', `Uma ocorrência grave foi registrada na obra ${proj?.name}: ${basePayload.description.slice(0, 80)}`, selectedProjectId, proj?.name || '');
+    }
+
+    setNewIncidentDate(new Date().toISOString().slice(0, 10));
+    setNewIncidentType('ocorrencia');
+    setNewIncidentSeverity('leve');
+    setNewIncidentDescription('');
+    setNewIncidentInjured('');
+    setNewIncidentAction('');
+    setNewIncidentPhoto(null);
+    setShowCreateIncident(false);
+    loadData();
+  };
+
+  const handleIncidentPhotoSelect = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => setNewIncidentPhoto(reader.result as string);
+    reader.readAsDataURL(file);
+  };
+
+
+  const [ocrProcessing, setOcrProcessing] = useState(false);
+  const [ocrCandidates, setOcrCandidates] = useState<(InvoiceMaterialCandidate & { selected: boolean })[]>([]);
+  const [showOcrReview, setShowOcrReview] = useState(false);
+  const [ocrRawText, setOcrRawText] = useState('');
+
+  const handleScanInvoice = async (file: File) => {
+    setOcrProcessing(true);
+    try {
+      const imageDataUrl: string = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      const text = await extractInvoiceText(imageDataUrl);
+      setOcrRawText(text);
+      const candidates = parseInvoiceMaterials(text);
+      setOcrCandidates(candidates.map(c => ({ ...c, selected: true })));
+      setShowOcrReview(true);
+    } catch (err) {
+      console.error('Erro ao ler nota fiscal:', err);
+      alert('Não foi possível ler a nota fiscal. Tente uma foto mais nítida e bem iluminada.');
+    } finally {
+      setOcrProcessing(false);
+    }
+  };
+
+  const handleImportOcrCandidates = async () => {
+    if (!selectedProjectId) return;
+    const toImport = ocrCandidates.filter(c => c.selected && c.name.trim());
+
+    for (const c of toImport) {
+      const basePayload = {
+        project_id: selectedProjectId,
+        name: c.name.trim(),
+        unit: c.unit || 'un',
+        needed_quantity: c.quantity,
+        acquired_quantity: c.quantity,
+        notes: 'Importado automaticamente via OCR de nota fiscal',
+        created_by: profile?.id || 'guest',
+      };
+
+      if (isRealSupabaseConfigured && realSupabase) {
+        await realSupabase.from('materials').insert(basePayload);
+      } else {
+        const newMaterial: Material = { id: `mat-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, created_at: new Date().toISOString(), ...basePayload };
+        const currentMats = mockDb.getMaterials();
+        currentMats.push(newMaterial);
+        mockDb.setMaterials(currentMats);
+      }
+    }
+
+    setShowOcrReview(false);
+    setOcrCandidates([]);
+    setOcrRawText('');
+    loadData();
   };
 
   // Update Material Acquired Quantity
@@ -955,6 +1331,52 @@ export default function App() {
     }
     loadData();
     setEditingProgressProjId(null);
+  };
+
+  // Importar Projeto em PDF por obra
+  const [importingPdfProjId, setImportingPdfProjId] = useState<string | null>(null);
+
+  const handleImportProjectPdf = async (projId: string, file: File) => {
+    if (!file || file.type !== 'application/pdf') {
+      alert('Selecione um arquivo em formato PDF.');
+      return;
+    }
+
+    setImportingPdfProjId(projId);
+    try {
+      const base64Pdf: string = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      if (isRealSupabaseConfigured && realSupabase) {
+        const { error } = await realSupabase.from('projects').update({ project_pdf: base64Pdf }).eq('id', projId);
+        if (error) console.error('Erro ao importar PDF do projeto:', error);
+      } else {
+        const currentProjs = mockDb.getProjects();
+        const idx = currentProjs.findIndex(p => p.id === projId);
+        if (idx !== -1) {
+          currentProjs[idx] = { ...currentProjs[idx], project_pdf: base64Pdf };
+          mockDb.setProjects(currentProjs);
+        }
+      }
+      loadData();
+    } catch (err) {
+      console.error('Erro ao importar PDF do projeto:', err);
+    } finally {
+      setImportingPdfProjId(null);
+    }
+  };
+
+  // Ao clicar, abre o PDF do projeto (se existir) e, em seguida, abre a obra
+  const handleOpenProjectPdf = (proj: Project) => {
+    if (proj.project_pdf) {
+      window.open(proj.project_pdf, '_blank');
+    }
+    setSelectedProjectId(proj.id);
+    setProjectSubTab('overview');
   };
 
   // Open the edit modal pre-filled with the project's current data
@@ -1353,6 +1775,30 @@ export default function App() {
   }
 
   // ==========================================
+  // VIEW: BLOQUEIO DE SEGURANÇA DO APP (PIN / BIOMETRIA)
+  // ==========================================
+  if (appLockOn && !appUnlocked) {
+    return (
+      <AppLockScreen
+        userName={profile?.full_name}
+        onUnlock={() => setAppUnlocked(true)}
+      />
+    );
+  }
+
+  // ==========================================
+  // VIEW: OFERTA DE ATIVAÇÃO DO BLOQUEIO (1ª vez que este usuário abre o app)
+  // ==========================================
+  if (showAppLockOffer) {
+    return (
+      <AppLockOfferScreen
+        onActivate={handleActivateAppLockFromOffer}
+        onDismiss={handleDismissAppLockOffer}
+      />
+    );
+  }
+
+  // ==========================================
   // VIEW: MAIN APPLICATION DASHBOARD
   // ==========================================
   return (
@@ -1385,6 +1831,16 @@ export default function App() {
 
         {/* Navigation Tabs */}
         <nav className="flex-1 p-3 space-y-1">
+          <button
+            onClick={() => { setActiveTab('inicio'); setSelectedProjectId(null); }}
+            className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition ${
+              activeTab === 'inicio' ? 'bg-primary text-white shadow-md shadow-primary/10' : 'text-text-light hover:bg-sidebar-light hover:text-white'
+            }`}
+          >
+            <Home size={18} />
+            <span>Início</span>
+          </button>
+
           <button
             onClick={() => { setActiveTab('projects'); setSelectedProjectId(null); }}
             className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition ${
@@ -1456,7 +1912,7 @@ export default function App() {
         {/* Footer actions */}
         <div className="p-4 border-t border-sidebar-light space-y-2">
           <button 
-            onClick={signOut}
+            onClick={() => { setAppUnlocked(false); signOut(); }}
             className="w-full flex items-center justify-center gap-2 py-2.5 text-xs font-bold uppercase tracking-wider rounded-lg text-error hover:bg-error-light hover:text-error transition"
           >
             <LogOut size={14} />
@@ -1467,6 +1923,13 @@ export default function App() {
       
       {/* MOBILE BOTTOM NAVIGATION BAR */}
       <div className="md:hidden bg-surface border-t border-border flex justify-around p-2 pt-2 safe-area-bottom fixed bottom-0 left-0 right-0 z-40 shadow-lg">
+        <button 
+          onClick={() => { setActiveTab('inicio'); setSelectedProjectId(null); }}
+          className={`flex flex-col items-center gap-1 ${activeTab === 'inicio' ? 'text-primary' : 'text-text-light'}`}
+        >
+          <Home size={20} />
+          <span className="text-[9px] font-bold">Início</span>
+        </button>
         <button 
           onClick={() => { setActiveTab('projects'); setSelectedProjectId(null); }}
           className={`flex flex-col items-center gap-1 ${activeTab === 'projects' ? 'text-primary' : 'text-text-light'}`}
@@ -1580,7 +2043,7 @@ export default function App() {
                     </div>
                   ) : permissionStatus === 'denied' ? (
                     <button
-                      onClick={() => setShowAndroidPermissionModal(true)}
+                      onClick={requestAndroidLocationPermission}
                       className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-warning/15 border border-warning/20 hover:bg-warning/25 text-warning text-xs font-semibold transition"
                     >
                       <ShieldAlert size={14} />
@@ -1588,7 +2051,7 @@ export default function App() {
                     </button>
                   ) : (
                     <button
-                      onClick={() => setShowAndroidPermissionModal(true)}
+                      onClick={requestAndroidLocationPermission}
                       className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-primary hover:bg-primary-dark text-white text-xs font-semibold shadow-md shadow-primary/10 transition"
                     >
                       <Navigation size={13} className="animate-pulse" />
@@ -1602,6 +2065,156 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* ==========================================
+            TAB: INÍCIO (HOME)
+           ========================================== */}
+        {activeTab === 'inicio' && (() => {
+          const activeProjects = projects.filter(p => p.status === 'em_andamento' || p.status === 'planejamento');
+          const pendingTasks = tasks.filter(t => t.status === 'pendente' || t.status === 'em_andamento');
+          const overdueTasks = tasks.filter(t => {
+            const d = getDaysRemaining(t.deadline);
+            return d !== null && d < 0 && t.status !== 'concluido';
+          });
+          const lowStockMaterials = materials.filter(m => (m.acquired_quantity / m.needed_quantity) < (stockThreshold / 100));
+          const nearestDeadlines = projects
+            .filter(p => p.deadline && p.status !== 'concluido')
+            .map(p => ({ proj: p, days: getDaysRemaining(p.deadline) }))
+            .filter(x => x.days !== null)
+            .sort((a, b) => (a.days as number) - (b.days as number))
+            .slice(0, 4);
+
+          return (
+            <div className="space-y-6 animate-fade-in">
+              {/* Cards resumo */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-surface border border-border rounded-2xl p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="h-9 w-9 rounded-xl bg-primary-50 text-primary flex items-center justify-center"><Building2 size={18} /></div>
+                  </div>
+                  <p className="text-2xl font-bold text-secondary font-display">{activeProjects.length}</p>
+                  <p className="text-[11px] font-semibold text-text-light uppercase tracking-wide">Obras Ativas</p>
+                </div>
+
+                <div className="bg-surface border border-border rounded-2xl p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="h-9 w-9 rounded-xl bg-accent/10 text-accent flex items-center justify-center"><ClipboardList size={18} /></div>
+                  </div>
+                  <p className="text-2xl font-bold text-secondary font-display">{pendingTasks.length}</p>
+                  <p className="text-[11px] font-semibold text-text-light uppercase tracking-wide">Serviços Pendentes</p>
+                </div>
+
+                <div className="bg-surface border border-border rounded-2xl p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className={`h-9 w-9 rounded-xl flex items-center justify-center ${overdueTasks.length > 0 ? 'bg-error/10 text-error' : 'bg-success/10 text-success'}`}><ShieldAlert size={18} /></div>
+                  </div>
+                  <p className="text-2xl font-bold text-secondary font-display">{overdueTasks.length}</p>
+                  <p className="text-[11px] font-semibold text-text-light uppercase tracking-wide">Serviços Atrasados</p>
+                </div>
+
+                <div className="bg-surface border border-border rounded-2xl p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className={`h-9 w-9 rounded-xl flex items-center justify-center ${lowStockMaterials.length > 0 ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success'}`}><Package size={18} /></div>
+                  </div>
+                  <p className="text-2xl font-bold text-secondary font-display">{lowStockMaterials.length}</p>
+                  <p className="text-[11px] font-semibold text-text-light uppercase tracking-wide">Suprimentos Críticos</p>
+                </div>
+              </div>
+
+              {/* Atalhos rápidos */}
+              <div className="bg-surface border border-border rounded-2xl p-4">
+                <h4 className="font-bold text-xs text-secondary uppercase tracking-wider mb-3">Atalhos Rápidos</h4>
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                  <button
+                    onClick={() => { setActiveTab('projects'); setShowCreateProject(true); }}
+                    className="flex flex-col items-center justify-center gap-2 py-4 rounded-xl bg-primary-50 hover:bg-primary/20 text-primary transition"
+                  >
+                    <Building2 size={20} />
+                    <span className="text-[11px] font-bold">Nova Obra</span>
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('materials')}
+                    className="flex flex-col items-center justify-center gap-2 py-4 rounded-xl bg-warning/10 hover:bg-warning/20 text-warning transition"
+                  >
+                    <Package size={20} />
+                    <span className="text-[11px] font-bold">Suprimentos</span>
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('tasks')}
+                    className="flex flex-col items-center justify-center gap-2 py-4 rounded-xl bg-accent/10 hover:bg-accent/20 text-accent transition"
+                  >
+                    <ClipboardList size={20} />
+                    <span className="text-[11px] font-bold">Serviços</span>
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('team')}
+                    className="flex flex-col items-center justify-center gap-2 py-4 rounded-xl bg-secondary/10 hover:bg-secondary/20 text-secondary transition"
+                  >
+                    <Users size={20} />
+                    <span className="text-[11px] font-bold">Equipe</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* Prazos mais próximos */}
+                <div className="bg-surface border border-border rounded-2xl p-4">
+                  <h4 className="font-bold text-xs text-secondary uppercase tracking-wider mb-3">Prazos Mais Próximos</h4>
+                  {nearestDeadlines.length === 0 ? (
+                    <p className="text-xs text-text-light text-center py-6">Nenhuma obra com prazo definido.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {nearestDeadlines.map(({ proj, days }) => (
+                        <button
+                          key={proj.id}
+                          onClick={() => { setActiveTab('projects'); setSelectedProjectId(proj.id); setProjectSubTab('overview'); }}
+                          className="w-full flex items-center justify-between p-2.5 rounded-lg hover:bg-surface-alt transition text-left"
+                        >
+                          <div>
+                            <p className="text-xs font-bold text-secondary">{proj.name}</p>
+                            <p className="text-[10px] text-text-light">{proj.client_name || 'Sem cliente'}</p>
+                          </div>
+                          <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${(days as number) < 0 ? 'bg-error/10 text-error' : (days as number) <= 7 ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success'}`}>
+                            {(days as number) < 0 ? `${Math.abs(days as number)}d atrasado` : `${days}d restantes`}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Suprimentos críticos */}
+                <div className="bg-surface border border-border rounded-2xl p-4">
+                  <h4 className="font-bold text-xs text-secondary uppercase tracking-wider mb-3">Suprimentos com Estoque Crítico</h4>
+                  {lowStockMaterials.length === 0 ? (
+                    <p className="text-xs text-text-light text-center py-6">Nenhum suprimento em nível crítico. 🎉</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {lowStockMaterials.slice(0, 5).map((mat) => {
+                        const proj = projects.find(p => p.id === mat.project_id);
+                        const ratio = Math.round((mat.acquired_quantity / mat.needed_quantity) * 100);
+                        return (
+                          <button
+                            key={mat.id}
+                            onClick={() => { setActiveTab('projects'); setSelectedProjectId(mat.project_id); setProjectSubTab('materials'); }}
+                            className="w-full flex items-center justify-between p-2.5 rounded-lg hover:bg-surface-alt transition text-left"
+                          >
+                            <div>
+                              <p className="text-xs font-bold text-secondary">{mat.name}</p>
+                              <p className="text-[10px] text-text-light">{proj?.name || 'Obra'}</p>
+                            </div>
+                            <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-warning/10 text-warning">{ratio}%</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
 
         {/* ==========================================
             TAB: PROJECTS (OBRAS)
@@ -1753,8 +2366,74 @@ export default function App() {
 
                       {/* Card Footer actions */}
                       <div className="bg-surface-alt border-t border-border p-3 px-5 flex items-center justify-between text-xs font-bold text-primary group-hover:bg-primary-50/30 transition duration-300">
-                        <span>Ver Painel Integrado</span>
-                        <ChevronRight size={16} />
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleShareProjectReport(proj); }}
+                            disabled={sharingReport}
+                            title="Compartilhar relatório desta obra"
+                            className="flex items-center gap-1.5 text-text-secondary hover:text-primary transition disabled:opacity-50"
+                          >
+                            {sharingReport && reportProjectId === proj.id ? (
+                              <Loader2 size={14} className="animate-spin" />
+                            ) : (
+                              <Share2 size={14} />
+                            )}
+                            Relatório
+                          </button>
+
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleShareProjectPdfReport(proj); }}
+                            disabled={sharingPdfReport}
+                            title="Gerar e compartilhar relatório mensal em PDF"
+                            className="flex items-center gap-1.5 text-text-secondary hover:text-primary transition disabled:opacity-50"
+                          >
+                            {sharingPdfReport && pdfReportProjectId === proj.id ? (
+                              <Loader2 size={14} className="animate-spin" />
+                            ) : (
+                              <FileText size={14} />
+                            )}
+                            Relatório Mensal (PDF)
+                          </button>
+
+                          {proj.project_pdf ? (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleOpenProjectPdf(proj); }}
+                              title="Abrir PDF do projeto e entrar na obra"
+                              className="flex items-center gap-1.5 text-text-secondary hover:text-primary transition"
+                            >
+                              <FileText size={14} />
+                              Abrir PDF
+                            </button>
+                          ) : (
+                            <label
+                              onClick={(e) => e.stopPropagation()}
+                              title="Importar projeto em PDF para esta obra"
+                              className="flex items-center gap-1.5 text-text-secondary hover:text-primary transition cursor-pointer"
+                            >
+                              {importingPdfProjId === proj.id ? (
+                                <Loader2 size={14} className="animate-spin" />
+                              ) : (
+                                <Upload size={14} />
+                              )}
+                              Importar Projeto (PDF)
+                              <input
+                                type="file"
+                                accept="application/pdf"
+                                className="hidden"
+                                onClick={(e) => e.stopPropagation()}
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (file) handleImportProjectPdf(proj.id, file);
+                                  e.target.value = '';
+                                }}
+                              />
+                            </label>
+                          )}
+                        </div>
+                        <span className="flex items-center gap-1">
+                          Ver Painel Integrado
+                          <ChevronRight size={16} />
+                        </span>
                       </div>
                     </div>
                   );
@@ -1855,6 +2534,24 @@ export default function App() {
                           </button>
                         </>
                       )}
+
+                      <button
+                        onClick={() => handleShareProjectReport(proj)}
+                        disabled={sharingReport}
+                        className="px-4 py-2 border border-primary/30 bg-primary/5 hover:bg-primary/10 text-primary rounded-xl text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-60"
+                      >
+                        {sharingReport ? <Loader2 size={14} className="animate-spin" /> : <Share2 size={14} />}
+                        Compartilhar Relatório
+                      </button>
+
+                      <button
+                        onClick={() => handleShareProjectPdfReport(proj)}
+                        disabled={sharingPdfReport}
+                        className="px-4 py-2 border border-primary/30 bg-primary/5 hover:bg-primary/10 text-primary rounded-xl text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-60"
+                      >
+                        {sharingPdfReport ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
+                        Relatório Mensal (PDF)
+                      </button>
 
                       <button
                         onClick={() => setSelectedProjectId(null)}
@@ -1961,6 +2658,22 @@ export default function App() {
                 Suprimentos ({materials.filter(m => m.project_id === selectedProjectId).length})
               </button>
               <button
+                onClick={() => setProjectSubTab('diary')}
+                className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${
+                  projectSubTab === 'diary' ? 'bg-primary text-white shadow-sm' : 'text-text-secondary hover:text-text'
+                }`}
+              >
+                Diário de Obra ({diaryEntries.filter(d => d.project_id === selectedProjectId).length})
+              </button>
+              <button
+                onClick={() => setProjectSubTab('safety')}
+                className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${
+                  projectSubTab === 'safety' ? 'bg-primary text-white shadow-sm' : 'text-text-secondary hover:text-text'
+                }`}
+              >
+                Segurança ({incidents.filter(i => i.project_id === selectedProjectId).length})
+              </button>
+              <button
                 onClick={() => setProjectSubTab('team')}
                 className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${
                   projectSubTab === 'team' ? 'bg-primary text-white shadow-sm' : 'text-text-secondary hover:text-text'
@@ -2035,7 +2748,51 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Material checklist highlights */}
+                  {/* Previsão de Atraso */}
+                  {(() => {
+                    const proj = projects.find(p => p.id === selectedProjectId);
+                    if (!proj) return null;
+                    const forecast = getProgressForecast(proj.start_date, proj.deadline, proj.progress);
+
+                    if (forecast.status === 'sem_dados') {
+                      return (
+                        <div className="bg-surface border border-border rounded-2xl p-6 shadow-sm">
+                          <h4 className="font-bold text-sm text-secondary uppercase tracking-wider border-b pb-2 mb-3">Previsão de Conclusão</h4>
+                          <p className="text-xs text-text-light">Defina data de início, prazo e registre progresso para calcular a previsão.</p>
+                        </div>
+                      );
+                    }
+
+                    const cfg = {
+                      no_prazo: { label: 'No Prazo', badgeClass: 'bg-success/10 text-success', icon: CheckCircle },
+                      atencao: { label: 'Atenção', badgeClass: 'bg-warning/10 text-warning', icon: ShieldAlert },
+                      atrasado: { label: 'Risco de Atraso', badgeClass: 'bg-error/10 text-error', icon: ShieldAlert },
+                    }[forecast.status as 'no_prazo' | 'atencao' | 'atrasado'];
+                    const Icon = cfg.icon;
+
+                    return (
+                      <div className="bg-surface border border-border rounded-2xl p-6 shadow-sm space-y-3">
+                        <div className="flex items-center justify-between border-b pb-2">
+                          <h4 className="font-bold text-sm text-secondary uppercase tracking-wider">Previsão de Conclusão</h4>
+                          <span className={`flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-full ${cfg.badgeClass}`}>
+                            <Icon size={12} />
+                            {cfg.label}
+                          </span>
+                        </div>
+                        <p className="text-xs text-text-secondary leading-relaxed">
+                          No ritmo atual de progresso ({forecast.dailyRatePercent?.toFixed(2)}%/dia), a obra deve concluir em{' '}
+                          <strong>{forecast.projectedDate?.toLocaleDateString('pt-BR')}</strong>
+                          {forecast.delayDays !== null && forecast.delayDays > 0 ? (
+                            <> — cerca de <strong className="text-error">{forecast.delayDays} dia(s) após o prazo</strong> combinado.</>
+                          ) : (
+                            <> — dentro do prazo combinado.</>
+                          )}
+                        </p>
+                      </div>
+                    );
+                  })()}
+
+
                   <div className="bg-surface border border-border rounded-2xl p-6 shadow-sm space-y-4">
                     <div className="flex justify-between items-center border-b pb-2">
                       <h4 className="font-bold text-sm text-secondary uppercase tracking-wider">Suprimentos Críticos</h4>
@@ -2265,15 +3022,33 @@ export default function App() {
               <div className="space-y-4 animate-fade-in">
                 <div className="flex justify-between items-center">
                   <h4 className="font-bold text-sm text-secondary uppercase tracking-wider">Suprimentos e Estoque da Obra</h4>
-                  {(profile?.role === 'engenheiro' || profile?.role === 'mestre_obra' || profile?.role === 'admin') && (
-                    <button
-                      onClick={() => setShowCreateMaterial(true)}
-                      className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-white text-xs font-semibold hover:bg-primary-dark transition"
-                    >
-                      <Plus size={14} />
-                      <span>Novo Material</span>
-                    </button>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {(profile?.role === 'engenheiro' || profile?.role === 'mestre_obra' || profile?.role === 'admin') && (
+                      <label
+                        title="Ler nota fiscal com a câmera e sugerir materiais automaticamente"
+                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-primary/30 bg-primary/5 text-primary text-xs font-semibold hover:bg-primary/10 transition cursor-pointer"
+                      >
+                        {ocrProcessing ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
+                        <span>Ler Nota Fiscal (OCR)</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          className="hidden"
+                          onChange={(e) => { const f = e.target.files?.[0]; if (f) handleScanInvoice(f); e.target.value = ''; }}
+                        />
+                      </label>
+                    )}
+                    {(profile?.role === 'engenheiro' || profile?.role === 'mestre_obra' || profile?.role === 'admin') && (
+                      <button
+                        onClick={() => setShowCreateMaterial(true)}
+                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-white text-xs font-semibold hover:bg-primary-dark transition"
+                      >
+                        <Plus size={14} />
+                        <span>Novo Material</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -2345,6 +3120,333 @@ export default function App() {
                 </div>
               </div>
             )}
+
+            {/* SUB-TAB: DIÁRIO DE OBRA */}
+            {projectSubTab === 'diary' && (
+              <div className="space-y-4 animate-fade-in">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-bold text-sm text-secondary uppercase tracking-wider">Registros do Diário</h4>
+                  <button
+                    onClick={() => setShowCreateDiary(true)}
+                    className="flex items-center gap-1.5 bg-primary hover:bg-primary-dark text-white text-xs font-bold px-3 py-2 rounded-lg transition shadow-sm shadow-primary/20"
+                  >
+                    <Plus size={14} />
+                    Novo Registro
+                  </button>
+                </div>
+
+                {showCreateDiary && (
+                  <form onSubmit={handleCreateDiaryEntry} className="bg-surface-alt border border-border rounded-xl p-4 space-y-3 animate-fade-in">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[10px] font-bold uppercase text-text-light">Data</label>
+                        <input
+                          type="date"
+                          value={newDiaryDate}
+                          onChange={(e) => setNewDiaryDate(e.target.value)}
+                          className="w-full mt-1 px-3 py-2 rounded-lg border border-border bg-surface text-sm"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold uppercase text-text-light">Mão de obra presente</label>
+                        <input
+                          type="number"
+                          min={0}
+                          value={newDiaryWorkers}
+                          onChange={(e) => setNewDiaryWorkers(Number(e.target.value))}
+                          className="w-full mt-1 px-3 py-2 rounded-lg border border-border bg-surface text-sm"
+                          placeholder="Nº de pessoas"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-bold uppercase text-text-light">Clima do dia</label>
+                      <div className="flex gap-2 mt-1">
+                        {([
+                          { value: 'sol', label: 'Sol', Icon: Sun },
+                          { value: 'nublado', label: 'Nublado', Icon: Cloud },
+                          { value: 'chuva', label: 'Chuva', Icon: CloudRain },
+                          { value: 'tempestade', label: 'Tempestade', Icon: CloudLightning },
+                        ] as const).map(({ value, label, Icon }) => (
+                          <button
+                            key={value}
+                            type="button"
+                            onClick={() => setNewDiaryWeather(value)}
+                            className={`flex-1 flex flex-col items-center gap-1 py-2 rounded-lg border text-[10px] font-bold transition ${
+                              newDiaryWeather === value ? 'bg-primary text-white border-primary' : 'bg-surface border-border text-text-secondary hover:border-primary/50'
+                            }`}
+                          >
+                            <Icon size={16} />
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-bold uppercase text-text-light">O que foi feito hoje</label>
+                      <textarea
+                        value={newDiaryDescription}
+                        onChange={(e) => setNewDiaryDescription(e.target.value)}
+                        className="w-full mt-1 px-3 py-2 rounded-lg border border-border bg-surface text-sm resize-none"
+                        rows={3}
+                        placeholder="Descreva os serviços executados no dia..."
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-bold uppercase text-text-light">Ocorrências (opcional)</label>
+                      <textarea
+                        value={newDiaryOccurrences}
+                        onChange={(e) => setNewDiaryOccurrences(e.target.value)}
+                        className="w-full mt-1 px-3 py-2 rounded-lg border border-border bg-surface text-sm resize-none"
+                        rows={2}
+                        placeholder="Problemas, atrasos, acidentes, visitas..."
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-bold uppercase text-text-light">Foto do dia (opcional)</label>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => { const f = e.target.files?.[0]; if (f) handleDiaryPhotoSelect(f); }}
+                        className="w-full mt-1 text-xs"
+                      />
+                      {newDiaryPhoto && (
+                        <img src={newDiaryPhoto} alt="Prévia" className="mt-2 h-24 rounded-lg object-cover border border-border" />
+                      )}
+                    </div>
+
+                    <div className="flex gap-2 pt-1">
+                      <button type="submit" className="flex-1 bg-primary hover:bg-primary-dark text-white text-xs font-bold py-2.5 rounded-lg transition">
+                        Salvar Registro
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowCreateDiary(false)}
+                        className="px-4 py-2.5 rounded-lg text-xs font-bold text-text-secondary hover:bg-surface transition"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                <div className="space-y-3">
+                  {diaryEntries.filter(d => d.project_id === selectedProjectId).length === 0 && !showCreateDiary && (
+                    <div className="text-center py-10 text-text-light text-sm">
+                      Nenhum registro no diário desta obra ainda.
+                    </div>
+                  )}
+
+                  {diaryEntries
+                    .filter(d => d.project_id === selectedProjectId)
+                    .sort((a, b) => b.entry_date.localeCompare(a.entry_date))
+                    .map((entry) => {
+                      const WeatherIcon = entry.weather === 'sol' ? Sun : entry.weather === 'nublado' ? Cloud : entry.weather === 'chuva' ? CloudRain : entry.weather === 'tempestade' ? CloudLightning : Cloud;
+                      const author = team.find(t => t.id === entry.created_by);
+                      return (
+                        <div key={entry.id} className="bg-surface border border-border rounded-xl p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-center gap-2">
+                              <div className="h-9 w-9 rounded-lg bg-primary-50 text-primary flex items-center justify-center shrink-0">
+                                <WeatherIcon size={16} />
+                              </div>
+                              <div>
+                                <p className="text-xs font-bold text-secondary">
+                                  {new Date(entry.entry_date + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' })}
+                                </p>
+                                <p className="text-[10px] text-text-light">
+                                  {author?.full_name || 'Registrado'} {entry.workers_count ? `· ${entry.workers_count} pessoa(s) na obra` : ''}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+
+                          <p className="text-xs text-text-secondary mt-3 leading-relaxed whitespace-pre-line">{entry.description}</p>
+
+                          {entry.occurrences && (
+                            <div className="mt-2 p-2 rounded-lg bg-warning/10 border border-warning/20">
+                              <p className="text-[10px] font-bold text-warning uppercase mb-0.5">Ocorrências</p>
+                              <p className="text-[11px] text-text-secondary">{entry.occurrences}</p>
+                            </div>
+                          )}
+
+                          {entry.photo && (
+                            <img src={entry.photo} alt="Registro do dia" className="mt-3 max-h-56 rounded-lg object-cover border border-border" />
+                          )}
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
+
+            {/* SUB-TAB: SAFETY (SEGURANÇA / EPI / OCORRÊNCIAS) */}
+            {projectSubTab === 'safety' && (() => {
+              const projSafetyItems = safetyItems.filter(s => s.project_id === selectedProjectId);
+              const projIncidents = incidents.filter(i => i.project_id === selectedProjectId);
+              const completedCount = projSafetyItems.filter(s => s.completed).length;
+
+              return (
+                <div className="space-y-6 animate-fade-in">
+                  {/* Checklist de EPI */}
+                  <div className="bg-surface border border-border rounded-2xl p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="font-bold text-sm text-secondary uppercase tracking-wider flex items-center gap-2">
+                        <HardHat size={16} className="text-primary" />
+                        Checklist de EPI e Segurança
+                      </h4>
+                      {projSafetyItems.length > 0 && (
+                        <span className="text-[11px] font-bold text-text-light">{completedCount}/{projSafetyItems.length} conferidos</span>
+                      )}
+                    </div>
+
+                    {projSafetyItems.length === 0 ? (
+                      <div className="text-center py-8">
+                        <p className="text-xs text-text-light mb-3">Nenhum checklist criado ainda para esta obra.</p>
+                        <button
+                          onClick={() => selectedProjectId && handleSeedSafetyChecklist(selectedProjectId)}
+                          className="bg-primary hover:bg-primary-dark text-white text-xs font-bold px-4 py-2 rounded-lg transition"
+                        >
+                          Criar Checklist Padrão
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {projSafetyItems.map((item) => (
+                          <button
+                            key={item.id}
+                            onClick={() => handleToggleSafetyItem(item)}
+                            className={`w-full flex items-center gap-3 p-2.5 rounded-lg border text-left transition ${
+                              item.completed ? 'bg-success/5 border-success/20' : 'bg-surface-alt border-border hover:border-primary/30'
+                            }`}
+                          >
+                            <div className={`h-5 w-5 rounded-md flex items-center justify-center shrink-0 border-2 ${item.completed ? 'bg-success border-success' : 'border-border'}`}>
+                              {item.completed && <Check size={14} className="text-white" />}
+                            </div>
+                            <span className={`text-xs font-semibold ${item.completed ? 'text-text-secondary line-through' : 'text-secondary'}`}>{item.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Registro de Ocorrências/Acidentes */}
+                  <div className="bg-surface border border-border rounded-2xl p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="font-bold text-sm text-secondary uppercase tracking-wider flex items-center gap-2">
+                        <ShieldAlert size={16} className="text-error" />
+                        Ocorrências e Acidentes
+                      </h4>
+                      <button
+                        onClick={() => setShowCreateIncident(true)}
+                        className="flex items-center gap-1.5 bg-error hover:bg-error/90 text-white text-xs font-bold px-3 py-2 rounded-lg transition"
+                      >
+                        <Plus size={14} />
+                        Registrar
+                      </button>
+                    </div>
+
+                    {showCreateIncident && (
+                      <form onSubmit={handleCreateIncident} className="bg-surface-alt border border-border rounded-xl p-4 space-y-3 mb-3 animate-fade-in">
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="text-[10px] font-bold uppercase text-text-light">Data</label>
+                            <input type="date" value={newIncidentDate} onChange={(e) => setNewIncidentDate(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-lg border border-border bg-surface text-sm" required />
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-bold uppercase text-text-light">Tipo</label>
+                            <select value={newIncidentType} onChange={(e) => setNewIncidentType(e.target.value as any)} className="w-full mt-1 px-3 py-2 rounded-lg border border-border bg-surface text-sm">
+                              <option value="ocorrencia">Ocorrência</option>
+                              <option value="quase_acidente">Quase Acidente</option>
+                              <option value="acidente">Acidente</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-bold uppercase text-text-light">Gravidade</label>
+                          <div className="flex gap-2 mt-1">
+                            {([
+                              { value: 'leve', label: 'Leve', cls: 'bg-success/10 text-success border-success/30' },
+                              { value: 'moderada', label: 'Moderada', cls: 'bg-warning/10 text-warning border-warning/30' },
+                              { value: 'grave', label: 'Grave', cls: 'bg-error/10 text-error border-error/30' },
+                            ] as const).map((s) => (
+                              <button
+                                key={s.value}
+                                type="button"
+                                onClick={() => setNewIncidentSeverity(s.value)}
+                                className={`flex-1 py-2 rounded-lg border text-[11px] font-bold transition ${newIncidentSeverity === s.value ? s.cls : 'bg-surface border-border text-text-secondary'}`}
+                              >
+                                {s.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-bold uppercase text-text-light">Descrição do ocorrido</label>
+                          <textarea value={newIncidentDescription} onChange={(e) => setNewIncidentDescription(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-lg border border-border bg-surface text-sm resize-none" rows={3} placeholder="O que aconteceu..." required />
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-bold uppercase text-text-light">Pessoa envolvida (opcional)</label>
+                          <input type="text" value={newIncidentInjured} onChange={(e) => setNewIncidentInjured(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-lg border border-border bg-surface text-sm" placeholder="Nome / função" />
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-bold uppercase text-text-light">Medida tomada (opcional)</label>
+                          <textarea value={newIncidentAction} onChange={(e) => setNewIncidentAction(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-lg border border-border bg-surface text-sm resize-none" rows={2} placeholder="Ex: primeiros socorros, afastamento, correção do risco..." />
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-bold uppercase text-text-light">Foto (opcional)</label>
+                          <input type="file" accept="image/*" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleIncidentPhotoSelect(f); }} className="w-full mt-1 text-xs" />
+                          {newIncidentPhoto && <img src={newIncidentPhoto} alt="Prévia" className="mt-2 h-24 rounded-lg object-cover border border-border" />}
+                        </div>
+
+                        <div className="flex gap-2 pt-1">
+                          <button type="submit" className="flex-1 bg-error hover:bg-error/90 text-white text-xs font-bold py-2.5 rounded-lg transition">Salvar Registro</button>
+                          <button type="button" onClick={() => setShowCreateIncident(false)} className="px-4 py-2.5 rounded-lg text-xs font-bold text-text-secondary hover:bg-surface transition">Cancelar</button>
+                        </div>
+                      </form>
+                    )}
+
+                    {projIncidents.length === 0 && !showCreateIncident ? (
+                      <p className="text-xs text-text-light text-center py-6">Nenhuma ocorrência registrada nesta obra. 🎉</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {projIncidents.map((inc) => {
+                          const sevClass = inc.severity === 'grave' ? 'bg-error/10 text-error' : inc.severity === 'moderada' ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success';
+                          const typeLabel = inc.type === 'acidente' ? 'Acidente' : inc.type === 'quase_acidente' ? 'Quase Acidente' : 'Ocorrência';
+                          return (
+                            <div key={inc.id} className="p-3 rounded-lg border border-border bg-surface-alt">
+                              <div className="flex items-center justify-between gap-2">
+                                <div>
+                                  <p className="text-xs font-bold text-secondary">{typeLabel} · {new Date(inc.occurred_at + 'T00:00:00').toLocaleDateString('pt-BR')}</p>
+                                  {inc.injured_person && <p className="text-[10px] text-text-light">Envolvido: {inc.injured_person}</p>}
+                                </div>
+                                <span className={`text-[10px] font-bold px-2 py-1 rounded-full shrink-0 ${sevClass}`}>{inc.severity}</span>
+                              </div>
+                              <p className="text-xs text-text-secondary mt-2 leading-relaxed">{inc.description}</p>
+                              {inc.action_taken && (
+                                <p className="text-[11px] text-text-secondary mt-1"><strong>Medida tomada:</strong> {inc.action_taken}</p>
+                              )}
+                              {inc.photo && <img src={inc.photo} alt="Registro" className="mt-2 max-h-40 rounded-lg object-cover border border-border" />}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* SUB-TAB: TEAM (EQUIPE LOCAL) */}
             {projectSubTab === 'team' && (
@@ -3118,13 +4220,98 @@ export default function App() {
               </div>
 
               <button
-                onClick={signOut}
+                onClick={() => { setAppUnlocked(false); signOut(); }}
                 className="w-full py-3 px-4 rounded-xl bg-error/10 hover:bg-error text-error hover:text-white font-semibold text-sm transition flex items-center justify-center gap-2"
               >
                 <LogOut size={16} />
                 <span>Encerrar Sessão</span>
               </button>
 
+            </div>
+
+            {/* Segurança e Recursos Nativos */}
+            <div className="bg-surface border border-border rounded-2xl p-6 shadow-sm space-y-4">
+              <div className="flex items-center gap-2">
+                <div className="h-9 w-9 rounded-xl bg-primary-50 text-primary flex items-center justify-center shrink-0">
+                  <ShieldCheck size={18} />
+                </div>
+                <div>
+                  <h4 className="font-bold text-sm text-secondary">Segurança e Recursos Nativos</h4>
+                  <p className="text-[11px] text-text-light">Veja o que o app acessa no seu Android e por quê</p>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {NATIVE_RESOURCES.map((res) => {
+                  const isNotif = res.key === 'notifications';
+                  const granted = isNotif && notifPermStatus === 'granted';
+                  const denied = isNotif && notifPermStatus === 'denied';
+
+                  return (
+                    <div key={res.key} className="p-3 rounded-xl bg-background border border-border">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex-1">
+                          <p className="text-xs font-bold text-secondary">{res.label}</p>
+                          <p className="text-[11px] text-text-secondary mt-0.5 leading-relaxed">{res.description}</p>
+                        </div>
+
+                        {res.requiresPermission ? (
+                          <span
+                            className={`shrink-0 px-2 py-1 rounded-full text-[10px] font-bold whitespace-nowrap ${
+                              granted
+                                ? 'bg-success/10 text-success'
+                                : denied
+                                ? 'bg-error/10 text-error'
+                                : 'bg-warning/10 text-warning'
+                            }`}
+                          >
+                            {granted ? 'Concedida' : denied ? 'Negada' : notifPermStatus === 'web' ? 'Não se aplica' : 'Pendente'}
+                          </span>
+                        ) : (
+                          <span className="shrink-0 px-2 py-1 rounded-full text-[10px] font-bold bg-success/10 text-success whitespace-nowrap">
+                            Sem permissão especial
+                          </span>
+                        )}
+                      </div>
+
+                      {isNotif && notifPermStatus !== 'granted' && notifPermStatus !== 'web' && (
+                        <button
+                          onClick={async () => { await requestNotificationPermission(); await refreshNotifPermStatus(); }}
+                          className="mt-2 text-[11px] font-bold text-primary hover:underline"
+                        >
+                          {denied ? 'Ativar nas configurações do Android' : 'Permitir notificações'}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <p className="text-[10px] text-text-light leading-relaxed">
+                O PHD Gestões não solicita permissão de acesso irrestrito ao armazenamento do aparelho. Arquivos (PDFs e fotos) são escolhidos por você através do seletor nativo do Android, e relatórios compartilhados usam apenas a pasta privada de cache do app.
+              </p>
+
+              {/* Bloqueio de segurança do app (recursos nativos do Android) */}
+              <div className="pt-4 border-t border-border space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold text-secondary">Bloqueio de Segurança do App</p>
+                    <p className="text-[11px] text-text-light mt-0.5">
+                      {deviceSecurityAvailable
+                        ? 'Exige a digital, rosto, PIN ou padrão já configurados no seu Android para abrir o app'
+                        : 'Configure uma digital, rosto, PIN ou padrão nas configurações do Android para usar este recurso'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => handleToggleAppLock(!appLockOn)}
+                    disabled={!deviceSecurityAvailable && !appLockOn}
+                    className={`shrink-0 w-11 h-6 rounded-full transition relative disabled:opacity-40 ${appLockOn ? 'bg-primary' : 'bg-input-bg'}`}
+                    title={appLockOn ? 'Desativar bloqueio' : 'Ativar bloqueio'}
+                  >
+                    <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${appLockOn ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -3434,6 +4621,86 @@ export default function App() {
       {/* ==========================================
           MODAL: CREATE MATERIAL (NOVO MATERIAL)
          ========================================== */}
+      {showOcrReview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in">
+          <div className="bg-surface rounded-2xl border border-border w-full max-w-lg shadow-xl overflow-hidden max-h-[90vh] flex flex-col">
+            <div className="flex justify-between items-center p-5 border-b border-border">
+              <div>
+                <h4 className="font-bold text-lg text-secondary font-display">Materiais Detectados</h4>
+                <p className="text-[11px] text-text-light">Revise os itens antes de importar — a leitura automática pode errar.</p>
+              </div>
+              <button onClick={() => setShowOcrReview(false)} className="text-text-light hover:text-text-secondary">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-3 overflow-y-auto flex-1">
+              {ocrCandidates.length === 0 ? (
+                <div className="text-center py-6 space-y-2">
+                  <p className="text-sm text-text-secondary">Não foi possível identificar itens automaticamente nesta nota.</p>
+                  <details className="text-left">
+                    <summary className="text-xs font-bold text-primary cursor-pointer">Ver texto lido pela câmera</summary>
+                    <pre className="text-[10px] text-text-light whitespace-pre-wrap mt-2 p-2 bg-surface-alt rounded-lg max-h-40 overflow-y-auto">{ocrRawText || '(nenhum texto reconhecido)'}</pre>
+                  </details>
+                </div>
+              ) : (
+                ocrCandidates.map((c, idx) => (
+                  <div key={idx} className={`p-3 rounded-xl border ${c.selected ? 'border-primary/30 bg-primary-50/30' : 'border-border bg-surface-alt opacity-60'}`}>
+                    <div className="flex items-start gap-2">
+                      <input
+                        type="checkbox"
+                        checked={c.selected}
+                        onChange={(e) => setOcrCandidates(prev => prev.map((p, i) => i === idx ? { ...p, selected: e.target.checked } : p))}
+                        className="mt-2"
+                      />
+                      <div className="flex-1 grid grid-cols-3 gap-2">
+                        <input
+                          type="text"
+                          value={c.name}
+                          onChange={(e) => setOcrCandidates(prev => prev.map((p, i) => i === idx ? { ...p, name: e.target.value } : p))}
+                          className="col-span-3 px-2 py-1.5 text-xs rounded-lg border border-border bg-surface"
+                          placeholder="Nome do material"
+                        />
+                        <input
+                          type="number"
+                          value={c.quantity}
+                          onChange={(e) => setOcrCandidates(prev => prev.map((p, i) => i === idx ? { ...p, quantity: Number(e.target.value) } : p))}
+                          className="px-2 py-1.5 text-xs rounded-lg border border-border bg-surface"
+                          placeholder="Qtd"
+                        />
+                        <input
+                          type="text"
+                          value={c.unit}
+                          onChange={(e) => setOcrCandidates(prev => prev.map((p, i) => i === idx ? { ...p, unit: e.target.value } : p))}
+                          className="col-span-2 px-2 py-1.5 text-xs rounded-lg border border-border bg-surface"
+                          placeholder="Unidade"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="p-5 border-t border-border flex gap-2">
+              <button
+                onClick={handleImportOcrCandidates}
+                disabled={ocrCandidates.filter(c => c.selected).length === 0}
+                className="flex-1 bg-primary hover:bg-primary-dark text-white text-sm font-bold py-2.5 rounded-xl transition disabled:opacity-50"
+              >
+                Importar {ocrCandidates.filter(c => c.selected).length} Selecionado(s)
+              </button>
+              <button
+                onClick={() => setShowOcrReview(false)}
+                className="px-4 py-2.5 rounded-xl border border-border text-text-secondary text-sm font-bold hover:bg-surface-alt transition"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showCreateMaterial && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in">
           <div className="bg-surface rounded-2xl border border-border w-full max-w-lg shadow-xl overflow-hidden">
@@ -3702,57 +4969,133 @@ export default function App() {
         })}
       </div>
 
-      {/* SIMULATED NATIVE ANDROID PERMISSION DIALOG (Material You style) */}
-      {showAndroidPermissionModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-surface text-text rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-border transform scale-100 transition-all duration-300">
-            
-            {/* Header: Android style Location Icon */}
-            <div className="flex flex-col items-center text-center mb-5">
-              <div className="w-14 h-14 bg-primary/10 text-primary rounded-full flex items-center justify-center mb-3 animate-bounce">
-                <MapPin size={30} className="text-primary fill-primary/10" />
+      {/* ==========================================
+          CARD DE RELATÓRIO (renderizado fora da tela,
+          usado apenas para gerar a imagem compartilhada)
+         ========================================== */}
+      {reportProjectId && (() => {
+        const proj = projects.find(p => p.id === reportProjectId);
+        if (!proj) return null;
+
+        const projTasks = tasks.filter(t => t.project_id === proj.id);
+        const projMaterials = materials.filter(m => m.project_id === proj.id);
+        const done = projTasks.filter(t => t.status === 'concluido').length;
+        const doing = projTasks.filter(t => t.status === 'em_andamento').length;
+        const pending = projTasks.filter(t => t.status === 'pendente').length;
+        const lowStockMaterials = projMaterials.filter(m => m.acquired_quantity < m.needed_quantity);
+        const daysLeft = getDaysRemaining(proj.deadline);
+        const isOverdue = daysLeft !== null && daysLeft < 0;
+        const now = new Date();
+
+        return (
+          <div className="fixed top-0 pointer-events-none" style={{ left: '-9999px', width: '800px' }}>
+            <div ref={reportCardRef} className="bg-white p-10 w-[800px]" style={{ fontFamily: 'inherit' }}>
+              {/* Cabeçalho */}
+              <div className="flex items-center justify-between border-b-4 border-primary pb-5 mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="h-14 w-14 rounded-2xl bg-primary flex items-center justify-center shrink-0">
+                    <Building2 size={30} className="text-white" strokeWidth={2.2} />
+                  </div>
+                  <div>
+                    <h1 className="text-2xl font-bold font-display text-secondary leading-tight">PHD Gestões</h1>
+                    <p className="text-xs text-text-secondary font-semibold">Relatório de Obra</p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p className="text-[11px] text-text-light font-semibold">Gerado em</p>
+                  <p className="text-xs font-bold text-secondary">{now.toLocaleDateString('pt-BR')} às {now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</p>
+                </div>
               </div>
-              <h4 className="text-base font-bold font-display tracking-tight text-secondary px-2 leading-snug">
-                Permitir que o app <span className="font-extrabold text-primary">PHD Gestão de Obras</span> acesse a localização deste dispositivo?
-              </h4>
-            </div>
 
-            {/* Description / Explanatory text */}
-            <p className="text-xs text-text-secondary text-center mb-6 px-1 leading-relaxed">
-              O aplicativo requer permissão de geolocalização para sincronizar automaticamente a previsão do tempo do canteiro, registrar as horas dos serviços locais com exatidão e integrar o fuso horário correto do dispositivo.
-            </p>
+              {/* Identificação da obra */}
+              <div className="mb-6">
+                <div className="flex items-center justify-between mb-1">
+                  <h2 className="text-xl font-bold text-secondary">{proj.name}</h2>
+                  <span
+                    className="text-xs font-bold px-3 py-1 rounded-full"
+                    style={{ backgroundColor: `${STATUS_COLORS[proj.status]}20`, color: STATUS_COLORS[proj.status] }}
+                  >
+                    {STATUS_LABELS[proj.status]}
+                  </span>
+                </div>
+                <p className="text-sm text-text-secondary">Cliente: {proj.client_name || 'Particular'}</p>
+                {proj.address && <p className="text-sm text-text-secondary">{proj.address}</p>}
+                {profile?.full_name && (
+                  <p className="text-sm text-text-secondary">
+                    Responsável: <span className="font-semibold text-secondary">{profile.full_name}</span>
+                    {profile.role && <span className="text-text-light"> ({ROLE_LABELS[profile.role]})</span>}
+                  </p>
+                )}
+              </div>
 
-            {/* Android style Action Buttons */}
-            <div className="flex flex-col gap-2 font-medium animate-pulse-subtle">
-              <button
-                onClick={requestAndroidLocationPermission}
-                className="w-full py-3 px-4 rounded-2xl bg-primary hover:bg-primary-dark text-white text-sm font-semibold transition shadow-sm hover:shadow active:scale-[0.98]"
-              >
-                Durante o uso do app
-              </button>
-              <button
-                onClick={requestAndroidLocationPermission}
-                className="w-full py-3 px-4 rounded-2xl bg-input-bg border border-border hover:bg-gray-100 text-text text-sm font-semibold transition active:scale-[0.98]"
-              >
-                Apenas esta vez
-              </button>
-              <button
-                onClick={() => {
-                  setShowAndroidPermissionModal(false);
-                  setPermissionStatus('denied');
-                  fetchWeatherByCoords(-23.5489, -46.6388, false);
-                }}
-                className="w-full py-2.5 px-4 rounded-2xl bg-transparent hover:bg-black/5 text-error text-xs font-semibold transition text-center"
-              >
-                Não permitir
-              </button>
+              {/* Progresso */}
+              <div className="mb-6">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-bold text-text-light uppercase tracking-wider">Progresso Geral</span>
+                  <span className="text-lg font-bold text-primary">{proj.progress}%</span>
+                </div>
+                <div className="w-full h-3 bg-background rounded-full overflow-hidden border border-border">
+                  <div className="h-full bg-primary rounded-full" style={{ width: `${proj.progress}%` }} />
+                </div>
+              </div>
+
+              {/* Indicadores */}
+              <div className="grid grid-cols-4 gap-3 mb-6">
+                <div className="p-3 bg-background rounded-xl border border-border text-center">
+                  <p className="text-lg font-bold text-primary">{done}</p>
+                  <p className="text-[10px] text-text-light font-bold uppercase">Entregues</p>
+                </div>
+                <div className="p-3 bg-background rounded-xl border border-border text-center">
+                  <p className="text-lg font-bold text-warning">{doing}</p>
+                  <p className="text-[10px] text-text-light font-bold uppercase">Executando</p>
+                </div>
+                <div className="p-3 bg-background rounded-xl border border-border text-center">
+                  <p className="text-lg font-bold text-text-secondary">{pending}</p>
+                  <p className="text-[10px] text-text-light font-bold uppercase">Planejados</p>
+                </div>
+                <div className="p-3 bg-background rounded-xl border border-border text-center">
+                  <p className={`text-lg font-bold ${isOverdue ? 'text-error' : 'text-secondary'}`}>
+                    {daysLeft === null ? '—' : Math.abs(daysLeft)}
+                  </p>
+                  <p className="text-[10px] text-text-light font-bold uppercase">
+                    {isOverdue ? 'Dias de Atraso' : 'Dias Restantes'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Prazo */}
+              <div className="flex items-center gap-2 mb-6 text-xs text-text-secondary font-semibold">
+                <Calendar size={14} />
+                Prazo final: {formatDate(proj.deadline)}
+              </div>
+
+              {/* Suprimentos em alerta */}
+              {lowStockMaterials.length > 0 && (
+                <div className="mb-2">
+                  <h3 className="text-xs font-bold text-text-light uppercase tracking-wider mb-2">
+                    Suprimentos em Alerta ({lowStockMaterials.length})
+                  </h3>
+                  <div className="space-y-1.5">
+                    {lowStockMaterials.slice(0, 6).map(m => (
+                      <div key={m.id} className="flex items-center justify-between px-3 py-2 bg-error-light rounded-lg border border-error/20">
+                        <span className="text-xs font-semibold text-secondary">{m.name}</span>
+                        <span className="text-xs font-bold text-error">
+                          {m.acquired_quantity}/{m.needed_quantity} {m.unit}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Rodapé */}
+              <div className="mt-8 pt-4 border-t border-border text-center">
+                <p className="text-[10px] text-text-light font-semibold">Relatório gerado automaticamente pelo app PHD Gestões</p>
+              </div>
             </div>
-            
-            {/* Android Visual Navigation Bar decoration */}
-            <div className="w-20 h-1 bg-border rounded-full mx-auto mt-5"></div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
     </div>
   );

@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { Profile, Project, ProjectMember, Task, Material, Message, LocalNotification, UserRole } from '@/types';
+import { Profile, Project, ProjectMember, Task, Material, Message, LocalNotification, UserRole, DiaryEntry, SafetyChecklistItem, IncidentReport } from '@/types';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -8,7 +8,15 @@ const isRealSupabaseConfigured = supabaseUrl && supabaseAnonKey;
 export { isRealSupabaseConfigured };
 
 export const realSupabase = isRealSupabaseConfigured
-  ? createClient(supabaseUrl, supabaseAnonKey)
+  ? createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        persistSession: true, // mantém o login salvo no aparelho entre aberturas do app
+        storage: window.localStorage,
+        storageKey: 'phd-gestoes-auth',
+        autoRefreshToken: true, // renova o login sozinho antes de expirar
+        detectSessionInUrl: false, // evita conflito de sessão dentro do app nativo (sem navegador)
+      },
+    })
   : null;
 
 // ==========================================
@@ -375,6 +383,15 @@ class MockStorage {
 
   getNotifications(): LocalNotification[] { return this.get('mock_notifications', INITIAL_NOTIFICATIONS); }
   setNotifications(data: LocalNotification[]) { this.set('mock_notifications', data); }
+
+  getDiaryEntries(): DiaryEntry[] { return this.get('mock_diary_entries', []); }
+  setDiaryEntries(data: DiaryEntry[]) { this.set('mock_diary_entries', data); }
+
+  getSafetyItems(): SafetyChecklistItem[] { return this.get('mock_safety_items', []); }
+  setSafetyItems(data: SafetyChecklistItem[]) { this.set('mock_safety_items', data); }
+
+  getIncidents(): IncidentReport[] { return this.get('mock_incidents', []); }
+  setIncidents(data: IncidentReport[]) { this.set('mock_incidents', data); }
 }
 
 export const mockDb = new MockStorage();
