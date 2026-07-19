@@ -55,7 +55,7 @@ jobs:
         run: |
           echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/release.keystore.jks
 
-          cat > patch-gradle.js <<'EOF'
+          cat > patch-gradle.cjs <<'EOF'
           const fs = require('fs');
           const path = 'android/app/build.gradle';
           let content = fs.readFileSync(path, 'utf8');
@@ -81,7 +81,7 @@ jobs:
           console.log('build.gradle configurado com a assinatura de release.');
           EOF
 
-          node patch-gradle.js
+          node patch-gradle.cjs
 
       - name: Build APK assinado (release)
         working-directory: ./android
