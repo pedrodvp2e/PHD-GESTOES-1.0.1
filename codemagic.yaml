@@ -1,0 +1,33 @@
+workflows:
+  android-debug:
+    name: Build Android APK (debug)
+    max_build_duration: 30
+    instance_type: linux_x2
+    environment:
+      node: 20
+      vars:
+        VITE_SUPABASE_URL: $VITE_SUPABASE_URL
+        VITE_SUPABASE_ANON_KEY: $VITE_SUPABASE_ANON_KEY
+    scripts:
+      - name: Install dependencies
+        script: npm install
+      - name: Build web app
+        script: npm run build
+      - name: Add Android platform
+        script: |
+          npx cap add android
+          npx cap sync android
+      - name: Generate app icon
+        script: npx capacitor-assets generate --android || true
+      - name: Configure notification and permissions
+        script: |
+          sed -i 's#</manifest>#    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n    <uses-permission android:name="android.permission.USE_BIOMETRIC" />\n    <uses-permission android:name="android.permission.USE_FINGERPRINT" />\n</manifest>#' android/app/src/main/AndroidManifest.xml
+          mkdir -p android/app/src/main/res/drawable
+          cp public/assets/images/icon.png android/app/src/main/res/drawable/ic_stat_notify.png || true
+      - name: Build APK (debug)
+        script: |
+          cd android
+          chmod +x ./gradlew
+          ./gradlew assembleDebug
+    artifacts:
+      - android/app/build/outputs/apk/debug/app-debug.apk
