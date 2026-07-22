@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { Profile, Project, ProjectMember, Task, Material, Message, LocalNotification, UserRole, DiaryEntry, SafetyChecklistItem, IncidentReport } from '@/types';
+import { Profile, Project, ProjectMember, Task, Material, Message, LocalNotification, UserRole, DiaryEntry, SafetyChecklistItem, IncidentReport, BudgetItem, CashFlowEntry, SupplierQuote, Payment, MaterialReceipt } from '@/types';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -23,6 +23,20 @@ export const realSupabase = isRealSupabaseConfigured
 // MOCK DATABASE & CLIENT SIMULATOR
 // ==========================================
 
+// Gera o próximo código sequencial no formato PHD-0000 com base nos códigos já existentes
+export function generateMemberCode(existingProfiles: Profile[]): string {
+  let maxNumber = 0;
+  existingProfiles.forEach((p) => {
+    const match = p.member_code?.match(/^PHD-(\d+)$/);
+    if (match) {
+      const n = parseInt(match[1], 10);
+      if (n > maxNumber) maxNumber = n;
+    }
+  });
+  const next = maxNumber + 1;
+  return `PHD-${String(next).padStart(4, '0')}`;
+}
+
 const INITIAL_PROFILES: Profile[] = [
   {
     id: 'user-joao',
@@ -31,6 +45,7 @@ const INITIAL_PROFILES: Profile[] = [
     phone: '(11) 98765-4321',
     avatar_url: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150',
     created_at: new Date().toISOString(),
+    member_code: 'PHD-0001',
   },
   {
     id: 'user-pedro',
@@ -39,6 +54,7 @@ const INITIAL_PROFILES: Profile[] = [
     phone: '(11) 91234-5678',
     avatar_url: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150',
     created_at: new Date().toISOString(),
+    member_code: 'PHD-0002',
   },
   {
     id: 'user-carlos',
@@ -47,6 +63,7 @@ const INITIAL_PROFILES: Profile[] = [
     phone: '(11) 97777-8888',
     avatar_url: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150',
     created_at: new Date().toISOString(),
+    member_code: 'PHD-0003',
   },
   {
     id: 'user-lucas',
@@ -55,6 +72,7 @@ const INITIAL_PROFILES: Profile[] = [
     phone: '(11) 96666-5555',
     avatar_url: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?w=150',
     created_at: new Date().toISOString(),
+    member_code: 'PHD-0004',
   },
   {
     id: 'user-marcos',
@@ -63,6 +81,7 @@ const INITIAL_PROFILES: Profile[] = [
     phone: '(11) 95555-4444',
     avatar_url: 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=150',
     created_at: new Date().toISOString(),
+    member_code: 'PHD-0005',
   }
 ];
 
@@ -364,6 +383,21 @@ class MockStorage {
   }
 
   getProfiles(): Profile[] { return this.get('mock_profiles', INITIAL_PROFILES); }
+  // Busca um único perfil pelo código PHD-0000 (exato, sem diferenciar maiúsculas) ou pelo telefone
+  findProfileByCodeOrPhone(search: string): Profile | undefined {
+    const term = search.trim();
+    if (!term) return undefined;
+    const normalizedCode = term.toUpperCase();
+    const digitsOnly = term.replace(/\D/g, '');
+    return this.getProfiles().find((p) => {
+      if (p.member_code && p.member_code.toUpperCase() === normalizedCode) return true;
+      if (digitsOnly.length >= 8 && p.phone) {
+        const phoneDigits = p.phone.replace(/\D/g, '');
+        if (phoneDigits === digitsOnly) return true;
+      }
+      return false;
+    });
+  }
   setProfiles(data: Profile[]) { this.set('mock_profiles', data); }
 
   getProjects(): Project[] { return this.get('mock_projects', INITIAL_PROJECTS); }
@@ -392,6 +426,21 @@ class MockStorage {
 
   getIncidents(): IncidentReport[] { return this.get('mock_incidents', []); }
   setIncidents(data: IncidentReport[]) { this.set('mock_incidents', data); }
+
+  getBudgetItems(): BudgetItem[] { return this.get('mock_budget_items', []); }
+  setBudgetItems(data: BudgetItem[]) { this.set('mock_budget_items', data); }
+
+  getCashFlow(): CashFlowEntry[] { return this.get('mock_cash_flow', []); }
+  setCashFlow(data: CashFlowEntry[]) { this.set('mock_cash_flow', data); }
+
+  getSupplierQuotes(): SupplierQuote[] { return this.get('mock_supplier_quotes', []); }
+  setSupplierQuotes(data: SupplierQuote[]) { this.set('mock_supplier_quotes', data); }
+
+  getPayments(): Payment[] { return this.get('mock_payments', []); }
+  setPayments(data: Payment[]) { this.set('mock_payments', data); }
+
+  getMaterialReceipts(): MaterialReceipt[] { return this.get('mock_material_receipts', []); }
+  setMaterialReceipts(data: MaterialReceipt[]) { this.set('mock_material_receipts', data); }
 }
 
 export const mockDb = new MockStorage();
@@ -452,6 +501,13 @@ export const supabaseMock = {
     },
     signUp: async ({ email, options }: { email: string; options: { data: any } }) => {
       const profiles = mockDb.getProfiles();
+      const phoneDigits = (options.data.phone || '').replace(/\D/g, '');
+      if (phoneDigits) {
+        const phoneTaken = profiles.some(p => p.phone && p.phone.replace(/\D/g, '') === phoneDigits);
+        if (phoneTaken) {
+          return { data: { session: null, user: null }, error: { message: 'Esse telefone já está cadastrado em outra conta (duplicate phone).' } };
+        }
+      }
       const userPart = email.split('@')[0];
       const newProfile: Profile = {
         id: `user-${userPart}`,
@@ -459,7 +515,8 @@ export const supabaseMock = {
         role: options.data.role || 'funcionario',
         phone: options.data.phone || null,
         avatar_url: `https://images.unsplash.com/photo-${1500000000000 + Math.floor(Math.random() * 500000)}?w=150`,
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
+        member_code: generateMemberCode(profiles),
       };
       profiles.push(newProfile);
       mockDb.setProfiles(profiles);
@@ -467,6 +524,10 @@ export const supabaseMock = {
       notifyAuthListeners();
       const user = { id: newProfile.id, email };
       return { data: { session: { user }, user }, error: null };
+    },
+    resetPasswordForEmail: async (_email: string, _options?: any) => {
+      // Modo demo: não há e-mail real para enviar, então apenas simula sucesso.
+      return { data: {}, error: null };
     },
     signOut: async () => {
       localStorage.removeItem('mock_active_user');

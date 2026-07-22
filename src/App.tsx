@@ -6,7 +6,8 @@ import {
   Search, Sliders, LogOut, CheckSquare, MessageSquare, Briefcase,
   Trash2, Volume2, VolumeX, Sparkles, Filter, Info,
   Sun, Cloud, CloudSun, CloudFog, CloudDrizzle, CloudRain, CloudLightning, Navigation,
-  Camera, Loader2, Phone, MessageCircle, Share2, FileText, Upload, ShieldCheck, Home
+  Camera, Loader2, Phone, MessageCircle, Share2, FileText, Upload, ShieldCheck, Home,
+  TrendingUp, TrendingDown, DollarSign, BarChart3
 } from 'lucide-react';
 import { useAuth } from './lib/auth';
 import { requestNotificationPermission, sendNativeNotification, scheduleMonthlyReportReminder } from './lib/notifications';
@@ -22,11 +23,11 @@ import { shareElementAsPdf } from './lib/sharePdfReport';
 import { getProgressForecast } from './lib/progressForecast';
 import { extractInvoiceText, parseInvoiceMaterials, InvoiceMaterialCandidate } from './lib/ocrInvoice';
 import appIcon from './assets/images/icon.png';
-import { supabase, mockDb, ROLE_LABELS, ROLE_COLORS, STATUS_LABELS, STATUS_COLORS, uploadAvatar, isRealSupabaseConfigured, realSupabase } from './lib/supabase';
-import { Project, Task, Material, Message, LocalNotification, UserRole, Profile, ProjectMember, DiaryEntry, SafetyChecklistItem, IncidentReport, DEFAULT_SAFETY_ITEMS } from './types';
+import { supabase, mockDb, ROLE_LABELS, ROLE_COLORS, STATUS_LABELS, STATUS_COLORS, uploadAvatar, isRealSupabaseConfigured, realSupabase, generateMemberCode } from './lib/supabase';
+import { Project, Task, Material, Message, LocalNotification, UserRole, Profile, ProjectMember, DiaryEntry, SafetyChecklistItem, IncidentReport, DEFAULT_SAFETY_ITEMS, BudgetItem, CashFlowEntry, SupplierQuote, Payment, MaterialReceipt } from './types';
 
 export default function App() {
-  const { session, profile, loading, signIn, signUp, signOut, refreshProfile } = useAuth();
+  const { session, profile, loading, signIn, signUp, signOut, refreshProfile, resetPassword } = useAuth();
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
 
@@ -65,7 +66,7 @@ export default function App() {
   
   // Drill-down project view
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [projectSubTab, setProjectSubTab] = useState<'overview' | 'tasks' | 'materials' | 'diary' | 'safety' | 'team' | 'messages'>('overview');
+  const [projectSubTab, setProjectSubTab] = useState<'overview' | 'tasks' | 'materials' | 'diary' | 'safety' | 'team' | 'messages' | 'financeiro'>('overview');
 
   // Authentication mode and form states
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
@@ -85,6 +86,11 @@ export default function App() {
   const [diaryEntries, setDiaryEntries] = useState<DiaryEntry[]>([]);
   const [safetyItems, setSafetyItems] = useState<SafetyChecklistItem[]>([]);
   const [incidents, setIncidents] = useState<IncidentReport[]>([]);
+  const [budgetItems, setBudgetItems] = useState<BudgetItem[]>([]);
+  const [cashFlow, setCashFlow] = useState<CashFlowEntry[]>([]);
+  const [supplierQuotes, setSupplierQuotes] = useState<SupplierQuote[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [materialReceipts, setMaterialReceipts] = useState<MaterialReceipt[]>([]);
   const [team, setTeam] = useState<Profile[]>([]);
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
   const [notifications, setNotifications] = useState<LocalNotification[]>([]);
@@ -196,6 +202,12 @@ export default function App() {
         setDiaryEntries((diaryData as DiaryEntry[]) || []);
         setSafetyItems((safetyData as SafetyChecklistItem[]) || []);
         setIncidents((incidentsData as IncidentReport[]) || []);
+        // Financeiro e cotações permanecem locais ao dispositivo (sem tabela no banco ainda)
+        setBudgetItems(mockDb.getBudgetItems());
+        setCashFlow(mockDb.getCashFlow());
+        setSupplierQuotes(mockDb.getSupplierQuotes());
+        setPayments(mockDb.getPayments());
+        setMaterialReceipts(mockDb.getMaterialReceipts());
         // Notificações permanecem locais ao dispositivo (não há tabela no banco)
         setNotifications(mockDb.getNotifications());
       } catch (err) {
@@ -215,6 +227,11 @@ export default function App() {
     setDiaryEntries(mockDb.getDiaryEntries());
     setSafetyItems(mockDb.getSafetyItems());
     setIncidents(mockDb.getIncidents());
+    setBudgetItems(mockDb.getBudgetItems());
+    setCashFlow(mockDb.getCashFlow());
+    setSupplierQuotes(mockDb.getSupplierQuotes());
+    setPayments(mockDb.getPayments());
+    setMaterialReceipts(mockDb.getMaterialReceipts());
   };
 
   // Segurança e Permissões: status da permissão nativa de notificações
@@ -581,18 +598,54 @@ export default function App() {
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
-    if (!email || !password || !fullName) {
-      setAuthError('Preencha os campos obrigatórios (*).');
+    if (!email || !password || !fullName || !phone) {
+      setAuthError('Preencha os campos obrigatórios (*), incluindo o telefone.');
       return;
     }
     setAuthLoading(true);
     try {
       const { error } = await signUp(email, password, fullName, userRole, phone);
-      if (error) setAuthError(error);
+      if (error) {
+        if (/duplicate|unique|already exists/i.test(error)) {
+          setAuthError('Esse telefone já está cadastrado em outra conta. Use outro número.');
+        } else {
+          setAuthError(error);
+        }
+      }
     } catch (err: any) {
-      setAuthError(err.message || 'Erro ao criar conta.');
+      const msg = err.message || 'Erro ao criar conta.';
+      setAuthError(/duplicate|unique/i.test(msg) ? 'Esse telefone já está cadastrado em outra conta. Use outro número.' : msg);
     } finally {
       setAuthLoading(false);
+    }
+  };
+
+  // Esqueci Minha Senha
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [resetSent, setResetSent] = useState(false);
+
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setResetError(null);
+    if (!resetEmail) {
+      setResetError('Informe o e-mail da sua conta.');
+      return;
+    }
+    setResetLoading(true);
+    try {
+      const { error } = await resetPassword(resetEmail);
+      if (error) {
+        setResetError(error);
+      } else {
+        setResetSent(true);
+      }
+    } catch (err: any) {
+      setResetError(err.message || 'Erro ao solicitar redefinição de senha.');
+    } finally {
+      setResetLoading(false);
     }
   };
 
@@ -915,6 +968,239 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
+  // ==========================================
+  // FINANCEIRO: ORÇAMENTO (previsto x realizado)
+  // ==========================================
+  const [showCreateBudgetItem, setShowCreateBudgetItem] = useState(false);
+  const [newBudgetCategory, setNewBudgetCategory] = useState('');
+  const [newBudgetPlanned, setNewBudgetPlanned] = useState('');
+  const [newBudgetActual, setNewBudgetActual] = useState('');
+
+  const handleCreateBudgetItem = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newBudgetCategory.trim() || !selectedProjectId) return;
+
+    const newItem: BudgetItem = {
+      id: `budget-${Date.now()}`,
+      project_id: selectedProjectId,
+      category: newBudgetCategory.trim(),
+      planned_value: Number(newBudgetPlanned) || 0,
+      actual_value: Number(newBudgetActual) || 0,
+      notes: null,
+      created_by: profile?.id || 'guest',
+      created_at: new Date().toISOString(),
+    };
+    const current = mockDb.getBudgetItems();
+    current.unshift(newItem);
+    mockDb.setBudgetItems(current);
+    setBudgetItems(current);
+
+    setNewBudgetCategory('');
+    setNewBudgetPlanned('');
+    setNewBudgetActual('');
+    setShowCreateBudgetItem(false);
+  };
+
+  const handleDeleteBudgetItem = (id: string) => {
+    const current = mockDb.getBudgetItems().filter(b => b.id !== id);
+    mockDb.setBudgetItems(current);
+    setBudgetItems(current);
+  };
+
+  // ==========================================
+  // FINANCEIRO: FLUXO DE CAIXA
+  // ==========================================
+  const [showCreateCashFlow, setShowCreateCashFlow] = useState(false);
+  const [newCashFlowType, setNewCashFlowType] = useState<'entrada' | 'saida'>('saida');
+  const [newCashFlowDate, setNewCashFlowDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [newCashFlowDescription, setNewCashFlowDescription] = useState('');
+  const [newCashFlowAmount, setNewCashFlowAmount] = useState('');
+  const [newCashFlowCategory, setNewCashFlowCategory] = useState('');
+
+  const handleCreateCashFlowEntry = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCashFlowDescription.trim() || !newCashFlowAmount || !selectedProjectId) return;
+
+    const newEntry: CashFlowEntry = {
+      id: `cashflow-${Date.now()}`,
+      project_id: selectedProjectId,
+      entry_date: newCashFlowDate,
+      type: newCashFlowType,
+      description: newCashFlowDescription.trim(),
+      amount: Number(newCashFlowAmount) || 0,
+      category: newCashFlowCategory.trim() || null,
+      created_by: profile?.id || 'guest',
+      created_at: new Date().toISOString(),
+    };
+    const current = mockDb.getCashFlow();
+    current.unshift(newEntry);
+    mockDb.setCashFlow(current);
+    setCashFlow(current);
+
+    setNewCashFlowType('saida');
+    setNewCashFlowDate(new Date().toISOString().slice(0, 10));
+    setNewCashFlowDescription('');
+    setNewCashFlowAmount('');
+    setNewCashFlowCategory('');
+    setShowCreateCashFlow(false);
+  };
+
+  const handleDeleteCashFlowEntry = (id: string) => {
+    const current = mockDb.getCashFlow().filter(c => c.id !== id);
+    mockDb.setCashFlow(current);
+    setCashFlow(current);
+  };
+
+  // ==========================================
+  // COTAÇÃO DE FORNECEDORES
+  // ==========================================
+  const [quotingMaterialId, setQuotingMaterialId] = useState<string | null>(null);
+  const [newQuoteSupplier, setNewQuoteSupplier] = useState('');
+  const [newQuotePrice, setNewQuotePrice] = useState('');
+
+  const handleCreateSupplierQuote = (e: React.FormEvent, materialId: string) => {
+    e.preventDefault();
+    if (!newQuoteSupplier.trim() || !newQuotePrice || !selectedProjectId) return;
+
+    const newQuote: SupplierQuote = {
+      id: `quote-${Date.now()}`,
+      material_id: materialId,
+      project_id: selectedProjectId,
+      supplier_name: newQuoteSupplier.trim(),
+      unit_price: Number(newQuotePrice) || 0,
+      notes: null,
+      created_by: profile?.id || 'guest',
+      created_at: new Date().toISOString(),
+    };
+    const current = mockDb.getSupplierQuotes();
+    current.unshift(newQuote);
+    mockDb.setSupplierQuotes(current);
+    setSupplierQuotes(current);
+
+    setNewQuoteSupplier('');
+    setNewQuotePrice('');
+  };
+
+  const handleDeleteSupplierQuote = (id: string) => {
+    const current = mockDb.getSupplierQuotes().filter(q => q.id !== id);
+    mockDb.setSupplierQuotes(current);
+    setSupplierQuotes(current);
+  };
+
+  // ==========================================
+  // PAGAMENTOS A FORNECEDORES E FUNCIONÁRIOS
+  // ==========================================
+  const [showCreatePayment, setShowCreatePayment] = useState(false);
+  const [newPaymentName, setNewPaymentName] = useState('');
+  const [newPaymentType, setNewPaymentType] = useState<'fornecedor' | 'funcionario'>('fornecedor');
+  const [newPaymentAmount, setNewPaymentAmount] = useState('');
+  const [newPaymentDueDate, setNewPaymentDueDate] = useState(() => new Date().toISOString().slice(0, 10));
+
+  const handleCreatePayment = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPaymentName.trim() || !newPaymentAmount || !selectedProjectId) return;
+
+    const newPayment: Payment = {
+      id: `payment-${Date.now()}`,
+      project_id: selectedProjectId,
+      payee_name: newPaymentName.trim(),
+      payee_type: newPaymentType,
+      amount: Number(newPaymentAmount) || 0,
+      due_date: newPaymentDueDate || null,
+      paid_date: null,
+      status: 'pendente',
+      notes: null,
+      created_by: profile?.id || 'guest',
+      created_at: new Date().toISOString(),
+    };
+    const current = mockDb.getPayments();
+    current.unshift(newPayment);
+    mockDb.setPayments(current);
+    setPayments(current);
+
+    setNewPaymentName('');
+    setNewPaymentType('fornecedor');
+    setNewPaymentAmount('');
+    setNewPaymentDueDate(new Date().toISOString().slice(0, 10));
+    setShowCreatePayment(false);
+  };
+
+  const handleMarkPaymentPaid = (id: string) => {
+    const current = mockDb.getPayments().map(p =>
+      p.id === id ? { ...p, status: 'pago' as const, paid_date: new Date().toISOString().slice(0, 10) } : p
+    );
+    mockDb.setPayments(current);
+    setPayments(current);
+  };
+
+  const handleDeletePayment = (id: string) => {
+    const current = mockDb.getPayments().filter(p => p.id !== id);
+    mockDb.setPayments(current);
+    setPayments(current);
+  };
+
+  // ==========================================
+  // NOTAS FISCAIS / COMPROVANTES DE MATERIAIS
+  // ==========================================
+  const [receiptMaterialId, setReceiptMaterialId] = useState<string | null>(null);
+  const [newReceiptAmount, setNewReceiptAmount] = useState('');
+  const [newReceiptDate, setNewReceiptDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [newReceiptPhoto, setNewReceiptPhoto] = useState<string | null>(null);
+
+  const handleReceiptPhotoSelect = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => setNewReceiptPhoto(reader.result as string);
+    reader.readAsDataURL(file);
+  };
+
+  const handleCreateMaterialReceipt = (e: React.FormEvent, materialId: string) => {
+    e.preventDefault();
+    if (!newReceiptAmount || !newReceiptPhoto || !selectedProjectId) return;
+
+    const newReceipt: MaterialReceipt = {
+      id: `receipt-${Date.now()}`,
+      material_id: materialId,
+      project_id: selectedProjectId,
+      amount: Number(newReceiptAmount) || 0,
+      purchased_at: newReceiptDate,
+      photo: newReceiptPhoto,
+      notes: null,
+      created_by: profile?.id || 'guest',
+      created_at: new Date().toISOString(),
+    };
+    const current = mockDb.getMaterialReceipts();
+    current.unshift(newReceipt);
+    mockDb.setMaterialReceipts(current);
+    setMaterialReceipts(current);
+
+    setNewReceiptAmount('');
+    setNewReceiptDate(new Date().toISOString().slice(0, 10));
+    setNewReceiptPhoto(null);
+    setReceiptMaterialId(null);
+  };
+
+  const handleDeleteMaterialReceipt = (id: string) => {
+    const current = mockDb.getMaterialReceipts().filter(r => r.id !== id);
+    mockDb.setMaterialReceipts(current);
+    setMaterialReceipts(current);
+  };
+
+  // Área construída da obra (usada no cálculo de custo por m²)
+  const handleUpdateProjectArea = async (projId: string, areaM2: number | null) => {
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('projects').update({ built_area_m2: areaM2 }).eq('id', projId);
+      if (error) console.error('Erro ao atualizar área construída:', error);
+    } else {
+      const currentProjs = mockDb.getProjects();
+      const idx = currentProjs.findIndex(p => p.id === projId);
+      if (idx !== -1) {
+        currentProjs[idx] = { ...currentProjs[idx], built_area_m2: areaM2 };
+        mockDb.setProjects(currentProjs);
+      }
+    }
+    loadData();
+  };
+
   // Checklist de EPI e Segurança
   const handleSeedSafetyChecklist = async (projectId: string) => {
     const existing = safetyItems.filter(s => s.project_id === projectId);
@@ -1105,18 +1391,56 @@ export default function App() {
     }
   };
 
-  // Invite Team Member to Project
-  const [inviteUserId, setInviteUserId] = useState('');
+  // Invite Team Member to Project — agora por busca via código PHD-0000 ou telefone,
+  // em vez de listar todas as contas cadastradas no app.
   const [inviteMode, setInviteMode] = useState<'existing' | 'new'>('existing');
+  const [memberSearchTerm, setMemberSearchTerm] = useState('');
+  const [foundMember, setFoundMember] = useState<Profile | null>(null);
+  const [memberSearchError, setMemberSearchError] = useState('');
+  const [searchingMember, setSearchingMember] = useState(false);
   const [newEmployeeName, setNewEmployeeName] = useState('');
   const [newEmployeePhone, setNewEmployeePhone] = useState('');
   const [newEmployeeRole, setNewEmployeeRole] = useState<UserRole>('funcionario');
+
+  const handleSearchMember = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setMemberSearchError('');
+    setFoundMember(null);
+    if (!memberSearchTerm.trim()) return;
+    setSearchingMember(true);
+    try {
+      if (isRealSupabaseConfigured && realSupabase) {
+        const { data, error } = await realSupabase.rpc('find_profile_by_code_or_phone', {
+          p_search: memberSearchTerm.trim(),
+        });
+        if (error) {
+          console.error('Erro ao buscar colaborador:', error);
+          setMemberSearchError('Não foi possível buscar. Tente novamente.');
+        } else if (data && data.length > 0) {
+          setFoundMember(data[0] as Profile);
+        } else {
+          setMemberSearchError('Nenhuma conta encontrada com esse código ou telefone.');
+        }
+      } else {
+        const result = mockDb.findProfileByCodeOrPhone(memberSearchTerm);
+        if (result) {
+          setFoundMember(result);
+        } else {
+          setMemberSearchError('Nenhuma conta encontrada com esse código ou telefone.');
+        }
+      }
+    } finally {
+      setSearchingMember(false);
+    }
+  };
+
   const handleInviteMember = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inviteUserId || !selectedProjectId) return;
+    if (!foundMember || !selectedProjectId) return;
+    const inviteUserId = foundMember.id;
+    const invitedUser = foundMember;
 
     const alreadyMember = mockDb.getMembers().some(m => m.project_id === selectedProjectId && m.user_id === inviteUserId);
-    const invitedUser = team.find(u => u.id === inviteUserId);
 
     if (isRealSupabaseConfigured && realSupabase) {
       const { data: existing } = await realSupabase
@@ -1158,7 +1482,9 @@ export default function App() {
       mockDb.setMembers(currentMembers);
     }
 
-    setInviteUserId('');
+    setMemberSearchTerm('');
+    setFoundMember(null);
+    setMemberSearchError('');
     setShowInviteMember(false);
     loadData();
 
@@ -1169,13 +1495,20 @@ export default function App() {
   // Cadastra um funcionário novo diretamente (nome, telefone, cargo) e já adiciona à obra atual
   const handleAddNewEmployee = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newEmployeeName.trim() || !selectedProjectId) return;
+    if (!newEmployeeName.trim() || !newEmployeePhone.trim() || !selectedProjectId) return;
 
     if (isRealSupabaseConfigured && realSupabase) {
       alert('No modo com Supabase real, cada profissional precisa criar a própria conta (cadastro com e-mail e senha) antes de poder ser adicionado à equipe, pois o perfil fica vinculado ao login dele. Peça para o profissional se cadastrar e depois use a opção "Já Tem Conta" para adicioná-lo à obra.');
       return;
     }
 
+    const currentProfiles = mockDb.getProfiles();
+    const newPhoneDigits = newEmployeePhone.trim().replace(/\D/g, '');
+    const phoneTaken = currentProfiles.some(p => p.phone && p.phone.replace(/\D/g, '') === newPhoneDigits);
+    if (phoneTaken) {
+      alert('Esse telefone já está cadastrado em outra conta. Confira o número e tente novamente.');
+      return;
+    }
     const newProfile: Profile = {
       id: `func-${Date.now()}`,
       full_name: newEmployeeName.trim(),
@@ -1183,9 +1516,9 @@ export default function App() {
       phone: newEmployeePhone.trim() || null,
       avatar_url: null,
       created_at: new Date().toISOString(),
+      member_code: generateMemberCode(currentProfiles),
     };
 
-    const currentProfiles = mockDb.getProfiles();
     currentProfiles.push(newProfile);
     mockDb.setProfiles(currentProfiles);
 
@@ -1585,9 +1918,71 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-background safe-area-top flex flex-col items-center justify-center">
-        <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
-        <p className="mt-4 text-text-secondary font-medium animate-pulse">Iniciando PHD Gestões...</p>
+      <div className="min-h-screen bg-secondary safe-area-top flex flex-col items-center justify-center overflow-hidden">
+        <div className="relative crane-rig">
+          <div className="crane-ground"></div>
+          <div className="crane-mast"></div>
+          <div className="crane-cabin"></div>
+
+          <div className="crane-jib-group">
+            <div className="crane-counter-jib"></div>
+            <div className="crane-counterweight"></div>
+            <div className="crane-jib"></div>
+            <div className="crane-tie1"></div>
+            <div className="crane-tie2"></div>
+
+            <div className="crane-trolley-group">
+              <div className="crane-trolley"></div>
+              <div className="crane-cable"></div>
+              <div className="crane-crate"></div>
+            </div>
+          </div>
+        </div>
+
+        <p className="mt-5 text-white font-display font-bold text-lg tracking-wide">PHD Gestões</p>
+        <p className="mt-1 text-white/60 text-xs font-medium animate-pulse">Iniciando...</p>
+
+        <style>{`
+          .crane-rig { width: 220px; height: 160px; }
+          .crane-ground { position: absolute; bottom: 0; left: 0; width: 100%; height: 4px; background: rgba(255,255,255,0.08); border-radius: 2px; }
+          .crane-mast { position: absolute; bottom: 4px; left: 30px; width: 10px; height: 130px;
+            background: repeating-linear-gradient(0deg, #F5A623 0px, #F5A623 8px, #C9860F 8px, #C9860F 10px); border-radius: 1px; }
+          .crane-cabin { position: absolute; bottom: 122px; left: 24px; width: 22px; height: 16px;
+            background: #1a1f3a; border: 2px solid #F5A623; border-radius: 2px; }
+          .crane-jib-group { position: absolute; bottom: 130px; left: 35px; width: 4px; height: 4px;
+            transform-origin: 0px 0px; animation: craneRotateJib 6s ease-in-out infinite; }
+          .crane-counter-jib { position: absolute; top: -3px; left: -46px; width: 46px; height: 6px; background: #C9860F; border-radius: 2px; }
+          .crane-counterweight { position: absolute; top: 2px; left: -42px; width: 20px; height: 14px; background: #3E4750; border-radius: 1px; }
+          .crane-jib { position: absolute; top: -3px; left: 0; width: 150px; height: 6px;
+            background: repeating-linear-gradient(90deg, #F5A623 0px, #F5A623 8px, #C9860F 8px, #C9860F 10px); border-radius: 2px; }
+          .crane-tie1 { position: absolute; width: 92px; height: 1.5px; background: #C9860F; top: 0; left: 0;
+            transform-origin: left center; transform: rotate(12deg) translateY(-32px); }
+          .crane-tie2 { position: absolute; width: 40px; height: 1.5px; background: #C9860F; top: 0; left: -40px;
+            transform-origin: right center; transform: rotate(-12deg) translateY(-32px); }
+          .crane-trolley-group { position: absolute; top: -1px; left: 20px; animation: craneTrolleyMove 6s ease-in-out infinite; }
+          .crane-trolley { width: 9px; height: 6px; background: #3E4750; border-radius: 1px; margin: 0 auto; }
+          .crane-cable { width: 1.5px; background: #9AA4B2; margin: 0 auto; animation: craneCableLength 6s ease-in-out infinite; }
+          .crane-crate { width: 18px; height: 14px; margin: 0 auto; border-radius: 2px;
+            background: linear-gradient(180deg,#B8703A,#8A4F26); border: 1px solid #6E3D1C; }
+
+          @keyframes craneRotateJib {
+            0%, 15%   { transform: rotate(0deg); }
+            50%       { transform: rotate(-9deg); }
+            85%, 100% { transform: rotate(0deg); }
+          }
+          @keyframes craneTrolleyMove {
+            0%, 10%   { left: 20px; }
+            45%, 58%  { left: 108px; }
+            92%, 100% { left: 20px; }
+          }
+          @keyframes craneCableLength {
+            0%, 8%    { height: 18px; }
+            22%, 40%  { height: 48px; }
+            48%, 55%  { height: 48px; }
+            68%, 82%  { height: 18px; }
+            92%,100%  { height: 18px; }
+          }
+        `}</style>
       </div>
     );
   }
@@ -1692,15 +2087,17 @@ export default function App() {
                 <>
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-text-secondary mb-1">
-                      Telefone (Opcional)
+                      Telefone *
                     </label>
                     <input
                       type="text"
+                      required
                       placeholder="(11) 99999-9999"
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
                       className="w-full px-4 py-2.5 rounded-xl border border-border bg-surface-alt text-text focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition"
                     />
+                    <p className="text-[11px] text-text-light mt-1">Cada telefone só pode estar em uma conta.</p>
                   </div>
 
                   <div>
@@ -1749,6 +2146,27 @@ export default function App() {
               </button>
             </form>
 
+            {authMode === 'login' && (
+              <>
+                <div className="relative my-6">
+                  <div className="absolute inset-0 flex items-center" aria-hidden="true">
+                    <div className="w-full border-t border-border"></div>
+                  </div>
+                  <div className="relative flex justify-center text-xs font-bold uppercase tracking-widest">
+                    <span className="bg-surface px-3 text-text-light">Esqueci Minha Senha</span>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => { setShowForgotPassword(true); setResetEmail(email); setResetError(null); setResetSent(false); }}
+                  className="w-full p-2.5 text-left rounded-xl bg-surface-alt hover:bg-input-bg border border-border transition"
+                >
+                  <div className="text-xs font-bold text-primary">Redefinir senha</div>
+                  <div className="text-[10px] text-text-light font-medium">Receba um link por e-mail para criar uma nova senha</div>
+                </button>
+              </>
+            )}
+
             {!isRealSupabaseConfigured && (
               <>
                 <div className="relative my-6">
@@ -1772,6 +2190,73 @@ export default function App() {
 
           </div>
         </div>
+
+        {showForgotPassword && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in">
+            <div className="bg-surface rounded-2xl border border-border w-full max-w-sm shadow-xl overflow-hidden">
+              <div className="flex justify-between items-center p-5 border-b border-border">
+                <h4 className="font-bold text-lg text-secondary font-display">Esqueci Minha Senha</h4>
+                <button
+                  onClick={() => { setShowForgotPassword(false); setResetSent(false); setResetError(null); }}
+                  className="text-text-light hover:text-text-secondary"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              {resetSent ? (
+                <div className="p-5 space-y-4 text-center">
+                  <p className="text-sm text-text-secondary">
+                    Se houver uma conta com o e-mail <span className="font-bold text-secondary">{resetEmail}</span>, enviamos um link para redefinir sua senha.
+                  </p>
+                  <button
+                    onClick={() => { setShowForgotPassword(false); setResetSent(false); }}
+                    className="w-full py-2.5 bg-primary hover:bg-primary-dark text-white text-sm font-semibold rounded-xl transition"
+                  >
+                    Fechar
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={handleForgotPassword} className="p-5 space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-text-secondary mb-1">E-mail da Conta *</label>
+                    <input
+                      type="email"
+                      required
+                      placeholder="seu@email.com"
+                      value={resetEmail}
+                      onChange={(e) => setResetEmail(e.target.value)}
+                      className="w-full px-4 py-2.5 rounded-xl border border-border bg-surface-alt text-text focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition"
+                    />
+                  </div>
+
+                  {resetError && (
+                    <div className="p-3 rounded-xl bg-error-light border border-error/20 text-error text-xs font-medium">
+                      {resetError}
+                    </div>
+                  )}
+
+                  <div className="flex gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => { setShowForgotPassword(false); setResetError(null); }}
+                      className="flex-1 py-2.5 border border-border bg-surface hover:bg-input-bg text-text-secondary text-sm font-semibold rounded-xl transition"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={resetLoading}
+                      className="flex-1 py-2.5 bg-primary hover:bg-primary-dark text-white text-sm font-semibold rounded-xl transition shadow-md disabled:opacity-60"
+                    >
+                      {resetLoading ? 'Enviando...' : 'Enviar Link'}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -2676,6 +3161,14 @@ export default function App() {
                 Segurança ({incidents.filter(i => i.project_id === selectedProjectId).length})
               </button>
               <button
+                onClick={() => setProjectSubTab('financeiro')}
+                className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${
+                  projectSubTab === 'financeiro' ? 'bg-primary text-white shadow-sm' : 'text-text-secondary hover:text-text'
+                }`}
+              >
+                Financeiro
+              </button>
+              <button
                 onClick={() => setProjectSubTab('team')}
                 className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${
                   projectSubTab === 'team' ? 'bg-primary text-white shadow-sm' : 'text-text-secondary hover:text-text'
@@ -2894,6 +3387,60 @@ export default function App() {
                     </button>
                   )}
                 </div>
+
+                {/* Cronograma visual (Gantt) */}
+                {(() => {
+                  const projTasks = tasks.filter(t => t.project_id === selectedProjectId && t.start_date && t.deadline);
+                  if (projTasks.length === 0) return null;
+
+                  const starts = projTasks.map(t => new Date(t.start_date as string).getTime());
+                  const ends = projTasks.map(t => new Date(t.deadline as string).getTime());
+                  const minDate = Math.min(...starts);
+                  const maxDate = Math.max(...ends);
+                  const totalSpan = Math.max(1, maxDate - minDate);
+
+                  return (
+                    <div className="bg-surface border border-border rounded-2xl p-5 space-y-3">
+                      <h4 className="font-bold text-sm text-secondary uppercase tracking-wider flex items-center gap-2">
+                        <BarChart3 size={16} className="text-primary" />
+                        Cronograma Visual
+                      </h4>
+                      <div className="space-y-2.5">
+                        {projTasks
+                          .sort((a, b) => new Date(a.start_date as string).getTime() - new Date(b.start_date as string).getTime())
+                          .map(task => {
+                            const start = new Date(task.start_date as string).getTime();
+                            const end = new Date(task.deadline as string).getTime();
+                            const offsetPct = ((start - minDate) / totalSpan) * 100;
+                            const widthPct = Math.max(2, ((end - start) / totalSpan) * 100);
+                            return (
+                              <div key={task.id} className="flex items-center gap-3">
+                                <span className="w-28 sm:w-40 shrink-0 text-xs font-semibold text-text-secondary truncate">{task.title}</span>
+                                <div className="flex-1 h-6 bg-input-bg rounded-full relative overflow-hidden">
+                                  <div
+                                    className="absolute top-0 h-full rounded-full flex items-center px-2"
+                                    style={{
+                                      left: `${offsetPct}%`,
+                                      width: `${widthPct}%`,
+                                      backgroundColor: STATUS_COLORS[task.status],
+                                    }}
+                                  >
+                                    <span className="text-[10px] font-bold text-white whitespace-nowrap overflow-hidden">
+                                      {task.progress}%
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                      </div>
+                      <div className="flex justify-between text-[10px] text-text-light font-semibold pt-1">
+                        <span>{formatDate(new Date(minDate).toISOString())}</span>
+                        <span>{formatDate(new Date(maxDate).toISOString())}</span>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 <div className="space-y-3">
                   {tasks.filter(t => t.project_id === selectedProjectId).map(task => {
@@ -3116,6 +3663,173 @@ export default function App() {
                             </button>
                           </div>
                         </div>
+
+                        {/* Cotação de fornecedores */}
+                        {(() => {
+                          const matQuotes = supplierQuotes
+                            .filter(q => q.material_id === mat.id)
+                            .sort((a, b) => a.unit_price - b.unit_price);
+                          const cheapest = matQuotes[0];
+                          const isQuoting = quotingMaterialId === mat.id;
+
+                          return (
+                            <div className="pt-2 border-t border-border/60 space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-bold text-text-secondary uppercase">
+                                  Cotações de Fornecedores ({matQuotes.length})
+                                </span>
+                                <button
+                                  onClick={() => setQuotingMaterialId(isQuoting ? null : mat.id)}
+                                  className="text-[11px] font-bold text-primary hover:underline"
+                                >
+                                  {isQuoting ? 'Fechar' : '+ Cotação'}
+                                </button>
+                              </div>
+
+                              {matQuotes.length > 0 && (
+                                <div className="space-y-1.5">
+                                  {matQuotes.map(q => {
+                                    const isCheapest = cheapest && q.id === cheapest.id;
+                                    const totalEstimate = q.unit_price * mat.needed_quantity;
+                                    return (
+                                      <div
+                                        key={q.id}
+                                        className={`flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs ${
+                                          isCheapest ? 'bg-success/10 border border-success/30' : 'bg-background border border-border'
+                                        }`}
+                                      >
+                                        <div>
+                                          <span className={`font-semibold ${isCheapest ? 'text-success' : 'text-text-secondary'}`}>
+                                            {isCheapest && '✓ '}{q.supplier_name}
+                                          </span>
+                                          <span className="text-text-light"> · {q.unit_price.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}/{mat.unit}</span>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-[10px] text-text-light">
+                                            Total est.: {totalEstimate.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                          </span>
+                                          <button onClick={() => handleDeleteSupplierQuote(q.id)} className="text-text-light hover:text-error">
+                                            <Trash2 size={12} />
+                                          </button>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+
+                              {isQuoting && (
+                                <form
+                                  onSubmit={(e) => handleCreateSupplierQuote(e, mat.id)}
+                                  className="flex items-center gap-2 bg-surface-alt border border-border rounded-lg p-2"
+                                >
+                                  <input
+                                    type="text"
+                                    placeholder="Fornecedor"
+                                    value={newQuoteSupplier}
+                                    onChange={e => setNewQuoteSupplier(e.target.value)}
+                                    className="flex-1 px-2 py-1.5 rounded border border-border bg-input-bg text-xs"
+                                    required
+                                  />
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    placeholder={`R$/${mat.unit}`}
+                                    value={newQuotePrice}
+                                    onChange={e => setNewQuotePrice(e.target.value)}
+                                    className="w-24 px-2 py-1.5 rounded border border-border bg-input-bg text-xs"
+                                    required
+                                  />
+                                  <button type="submit" className="px-3 py-1.5 bg-primary text-white rounded text-xs font-bold shrink-0">
+                                    Salvar
+                                  </button>
+                                </form>
+                              )}
+                            </div>
+                          );
+                        })()}
+
+                        {/* Notas fiscais / comprovantes de compra */}
+                        {(() => {
+                          const matReceipts = materialReceipts.filter(r => r.material_id === mat.id);
+                          const isAttaching = receiptMaterialId === mat.id;
+
+                          return (
+                            <div className="pt-2 border-t border-border/60 space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-bold text-text-secondary uppercase">
+                                  Notas Fiscais / Comprovantes ({matReceipts.length})
+                                </span>
+                                <button
+                                  onClick={() => setReceiptMaterialId(isAttaching ? null : mat.id)}
+                                  className="text-[11px] font-bold text-primary hover:underline"
+                                >
+                                  {isAttaching ? 'Fechar' : '+ Anexar'}
+                                </button>
+                              </div>
+
+                              {matReceipts.length > 0 && (
+                                <div className="grid grid-cols-3 gap-2">
+                                  {matReceipts.map(r => (
+                                    <div key={r.id} className="relative">
+                                      <img src={r.photo} alt="Comprovante" className="h-20 w-full object-cover rounded-lg border border-border" />
+                                      <span className="block text-[10px] font-bold text-secondary mt-0.5">
+                                        {r.amount.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                      </span>
+                                      <span className="block text-[9px] text-text-light">{formatDate(r.purchased_at)}</span>
+                                      <button
+                                        onClick={() => handleDeleteMaterialReceipt(r.id)}
+                                        className="absolute top-1 right-1 bg-error text-white rounded-full p-0.5"
+                                      >
+                                        <X size={10} />
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              {isAttaching && (
+                                <form
+                                  onSubmit={(e) => handleCreateMaterialReceipt(e, mat.id)}
+                                  className="bg-surface-alt border border-border rounded-lg p-3 space-y-2"
+                                >
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    onChange={(e) => { const f = e.target.files?.[0]; if (f) handleReceiptPhotoSelect(f); }}
+                                    className="w-full text-xs"
+                                    required
+                                  />
+                                  {newReceiptPhoto && (
+                                    <img src={newReceiptPhoto} alt="Prévia" className="h-16 rounded-lg object-cover border border-border" />
+                                  )}
+                                  <div className="grid grid-cols-2 gap-2">
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      min="0"
+                                      placeholder="Valor pago (R$)"
+                                      value={newReceiptAmount}
+                                      onChange={e => setNewReceiptAmount(e.target.value)}
+                                      className="w-full px-2 py-1.5 rounded border border-border bg-input-bg text-xs"
+                                      required
+                                    />
+                                    <input
+                                      type="date"
+                                      value={newReceiptDate}
+                                      onChange={e => setNewReceiptDate(e.target.value)}
+                                      className="w-full px-2 py-1.5 rounded border border-border bg-input-bg text-xs"
+                                    />
+                                  </div>
+                                  <button type="submit" className="w-full py-1.5 bg-primary text-white rounded text-xs font-bold">
+                                    Salvar Comprovante
+                                  </button>
+                                </form>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
                     );
                   })}
@@ -3446,6 +4160,384 @@ export default function App() {
                       </div>
                     )}
                   </div>
+                </div>
+              );
+            })()}
+
+            {/* SUB-TAB: FINANCEIRO (ORÇAMENTO E FLUXO DE CAIXA) */}
+            {projectSubTab === 'financeiro' && (() => {
+              const projBudget = budgetItems.filter(b => b.project_id === selectedProjectId);
+              const projCashFlow = cashFlow
+                .filter(c => c.project_id === selectedProjectId)
+                .sort((a, b) => b.entry_date.localeCompare(a.entry_date));
+              const totalPlanned = projBudget.reduce((sum, b) => sum + b.planned_value, 0);
+              const totalActual = projBudget.reduce((sum, b) => sum + b.actual_value, 0);
+              const totalEntradas = projCashFlow.filter(c => c.type === 'entrada').reduce((sum, c) => sum + c.amount, 0);
+              const totalSaidas = projCashFlow.filter(c => c.type === 'saida').reduce((sum, c) => sum + c.amount, 0);
+              const saldo = totalEntradas - totalSaidas;
+              const fmt = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+              return (
+                <div className="space-y-6 animate-fade-in">
+                  {/* Resumo geral */}
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div className="p-4 bg-surface border border-border rounded-xl">
+                      <span className="block text-[10px] text-text-light font-bold uppercase tracking-wider">Orçado</span>
+                      <span className="text-lg font-bold text-secondary">{fmt(totalPlanned)}</span>
+                    </div>
+                    <div className="p-4 bg-surface border border-border rounded-xl">
+                      <span className="block text-[10px] text-text-light font-bold uppercase tracking-wider">Realizado</span>
+                      <span className={`text-lg font-bold ${totalActual > totalPlanned ? 'text-error' : 'text-secondary'}`}>{fmt(totalActual)}</span>
+                    </div>
+                    <div className="p-4 bg-surface border border-border rounded-xl">
+                      <span className="block text-[10px] text-text-light font-bold uppercase tracking-wider">Entradas (Caixa)</span>
+                      <span className="text-lg font-bold text-success">{fmt(totalEntradas)}</span>
+                    </div>
+                    <div className="p-4 bg-surface border border-border rounded-xl">
+                      <span className="block text-[10px] text-text-light font-bold uppercase tracking-wider">Saldo em Caixa</span>
+                      <span className={`text-lg font-bold ${saldo < 0 ? 'text-error' : 'text-success'}`}>{fmt(saldo)}</span>
+                    </div>
+                  </div>
+
+                  {/* Custo por m² construído */}
+                  {(() => {
+                    const currentProj = projects.find(p => p.id === selectedProjectId);
+                    const totalGasto = totalActual + payments.filter(p => p.project_id === selectedProjectId && p.status === 'pago').reduce((sum, p) => sum + p.amount, 0);
+                    const custoPorM2 = currentProj?.built_area_m2 && currentProj.built_area_m2 > 0
+                      ? totalGasto / currentProj.built_area_m2
+                      : null;
+                    return (
+                      <div className="bg-surface border border-border rounded-2xl p-5 space-y-3">
+                        <h3 className="font-bold text-sm text-secondary uppercase tracking-wider">Custo por m² Construído</h3>
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <div>
+                            <label className="text-[10px] text-text-light font-bold uppercase">Área construída (m²)</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              defaultValue={currentProj?.built_area_m2 ?? ''}
+                              onBlur={(e) => {
+                                const val = e.target.value ? Number(e.target.value) : null;
+                                if (selectedProjectId) handleUpdateProjectArea(selectedProjectId, val);
+                              }}
+                              placeholder="Ex: 250"
+                              className="w-32 px-3 py-2 rounded-lg border border-border bg-input-bg text-sm"
+                            />
+                          </div>
+                          <div className="flex-1 min-w-[140px] p-3.5 bg-background rounded-xl border border-border">
+                            <span className="block text-[10px] text-text-light font-bold uppercase tracking-wider">Custo por m²</span>
+                            <span className="text-lg font-bold text-secondary">
+                              {custoPorM2 !== null ? custoPorM2.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : '— informe a área'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Orçamento previsto x realizado */}
+                  <div className="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-bold text-sm text-secondary uppercase tracking-wider">Orçamento: Previsto x Realizado</h3>
+                      <button
+                        onClick={() => setShowCreateBudgetItem(!showCreateBudgetItem)}
+                        className="text-xs font-bold text-primary hover:underline"
+                      >
+                        {showCreateBudgetItem ? 'Cancelar' : '+ Categoria'}
+                      </button>
+                    </div>
+
+                    {showCreateBudgetItem && (
+                      <form onSubmit={handleCreateBudgetItem} className="bg-surface-alt border border-border rounded-xl p-4 space-y-3">
+                        <input
+                          type="text"
+                          placeholder="Categoria (ex: Mão de obra, Materiais, Equipamentos)"
+                          value={newBudgetCategory}
+                          onChange={e => setNewBudgetCategory(e.target.value)}
+                          className="w-full px-3 py-2 rounded-lg border border-border bg-input-bg text-sm"
+                          required
+                        />
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="text-[10px] text-text-light font-bold uppercase">Valor Previsto (R$)</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={newBudgetPlanned}
+                              onChange={e => setNewBudgetPlanned(e.target.value)}
+                              className="w-full px-3 py-2 rounded-lg border border-border bg-input-bg text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] text-text-light font-bold uppercase">Valor Realizado (R$)</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={newBudgetActual}
+                              onChange={e => setNewBudgetActual(e.target.value)}
+                              className="w-full px-3 py-2 rounded-lg border border-border bg-input-bg text-sm"
+                            />
+                          </div>
+                        </div>
+                        <button type="submit" className="w-full py-2 bg-primary text-white rounded-lg text-sm font-bold">
+                          Salvar Categoria
+                        </button>
+                      </form>
+                    )}
+
+                    {projBudget.length === 0 && !showCreateBudgetItem && (
+                      <p className="text-sm text-text-light text-center py-4">Nenhuma categoria de orçamento cadastrada ainda.</p>
+                    )}
+
+                    <div className="space-y-3">
+                      {projBudget.map(item => {
+                        const pct = item.planned_value > 0 ? Math.min(100, (item.actual_value / item.planned_value) * 100) : 0;
+                        const over = item.actual_value > item.planned_value;
+                        return (
+                          <div key={item.id} className="p-3.5 bg-background rounded-xl border border-border">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-sm font-bold text-secondary">{item.category}</span>
+                              <div className="flex items-center gap-2">
+                                <span className={`text-xs font-bold ${over ? 'text-error' : 'text-text-secondary'}`}>
+                                  {fmt(item.actual_value)} / {fmt(item.planned_value)}
+                                </span>
+                                <button onClick={() => handleDeleteBudgetItem(item.id)} className="text-text-light hover:text-error">
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
+                            </div>
+                            <div className="h-2 w-full bg-input-bg rounded-full overflow-hidden">
+                              <div
+                                className={`h-full rounded-full transition-all duration-500 ${over ? 'bg-error' : 'bg-primary'}`}
+                                style={{ width: `${pct}%` }}
+                              ></div>
+                            </div>
+                            {over && (
+                              <span className="text-[11px] text-error font-semibold mt-1 block">
+                                Estourou o orçamento em {fmt(item.actual_value - item.planned_value)}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Fluxo de caixa */}
+                  <div className="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-bold text-sm text-secondary uppercase tracking-wider">Fluxo de Caixa</h3>
+                      <button
+                        onClick={() => setShowCreateCashFlow(!showCreateCashFlow)}
+                        className="text-xs font-bold text-primary hover:underline"
+                      >
+                        {showCreateCashFlow ? 'Cancelar' : '+ Lançamento'}
+                      </button>
+                    </div>
+
+                    {showCreateCashFlow && (
+                      <form onSubmit={handleCreateCashFlowEntry} className="bg-surface-alt border border-border rounded-xl p-4 space-y-3">
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setNewCashFlowType('entrada')}
+                            className={`flex-1 py-2 rounded-lg text-xs font-bold ${newCashFlowType === 'entrada' ? 'bg-success text-white' : 'bg-input-bg text-text-secondary'}`}
+                          >
+                            Entrada
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setNewCashFlowType('saida')}
+                            className={`flex-1 py-2 rounded-lg text-xs font-bold ${newCashFlowType === 'saida' ? 'bg-error text-white' : 'bg-input-bg text-text-secondary'}`}
+                          >
+                            Saída
+                          </button>
+                        </div>
+                        <input
+                          type="date"
+                          value={newCashFlowDate}
+                          onChange={e => setNewCashFlowDate(e.target.value)}
+                          className="w-full px-3 py-2 rounded-lg border border-border bg-input-bg text-sm"
+                        />
+                        <input
+                          type="text"
+                          placeholder="Descrição (ex: Pagamento fornecedor, Medição recebida)"
+                          value={newCashFlowDescription}
+                          onChange={e => setNewCashFlowDescription(e.target.value)}
+                          className="w-full px-3 py-2 rounded-lg border border-border bg-input-bg text-sm"
+                          required
+                        />
+                        <div className="grid grid-cols-2 gap-3">
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            placeholder="Valor (R$)"
+                            value={newCashFlowAmount}
+                            onChange={e => setNewCashFlowAmount(e.target.value)}
+                            className="w-full px-3 py-2 rounded-lg border border-border bg-input-bg text-sm"
+                            required
+                          />
+                          <input
+                            type="text"
+                            placeholder="Categoria (opcional)"
+                            value={newCashFlowCategory}
+                            onChange={e => setNewCashFlowCategory(e.target.value)}
+                            className="w-full px-3 py-2 rounded-lg border border-border bg-input-bg text-sm"
+                          />
+                        </div>
+                        <button type="submit" className="w-full py-2 bg-primary text-white rounded-lg text-sm font-bold">
+                          Salvar Lançamento
+                        </button>
+                      </form>
+                    )}
+
+                    {projCashFlow.length === 0 && !showCreateCashFlow && (
+                      <p className="text-sm text-text-light text-center py-4">Nenhum lançamento de caixa registrado ainda.</p>
+                    )}
+
+                    <div className="space-y-2">
+                      {projCashFlow.map(entry => (
+                        <div key={entry.id} className="flex items-center justify-between p-3 bg-background rounded-xl border border-border">
+                          <div className="flex items-center gap-3">
+                            {entry.type === 'entrada' ? (
+                              <TrendingUp size={16} className="text-success shrink-0" />
+                            ) : (
+                              <TrendingDown size={16} className="text-error shrink-0" />
+                            )}
+                            <div>
+                              <span className="block text-sm font-semibold text-secondary">{entry.description}</span>
+                              <span className="block text-[11px] text-text-light">
+                                {formatDate(entry.entry_date)}{entry.category ? ` · ${entry.category}` : ''}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className={`text-sm font-bold ${entry.type === 'entrada' ? 'text-success' : 'text-error'}`}>
+                              {entry.type === 'entrada' ? '+' : '-'} {fmt(entry.amount)}
+                            </span>
+                            <button onClick={() => handleDeleteCashFlowEntry(entry.id)} className="text-text-light hover:text-error">
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Pagamentos a Fornecedores e Funcionários */}
+                  {(() => {
+                    const projPayments = payments
+                      .filter(p => p.project_id === selectedProjectId)
+                      .sort((a, b) => (a.due_date || '').localeCompare(b.due_date || ''));
+                    const today = new Date().toISOString().slice(0, 10);
+
+                    return (
+                      <div className="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                        <div className="flex items-center justify-between">
+                          <h3 className="font-bold text-sm text-secondary uppercase tracking-wider">Pagamentos a Fornecedores e Funcionários</h3>
+                          <button
+                            onClick={() => setShowCreatePayment(!showCreatePayment)}
+                            className="text-xs font-bold text-primary hover:underline"
+                          >
+                            {showCreatePayment ? 'Cancelar' : '+ Pagamento'}
+                          </button>
+                        </div>
+
+                        {showCreatePayment && (
+                          <form onSubmit={handleCreatePayment} className="bg-surface-alt border border-border rounded-xl p-4 space-y-3">
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setNewPaymentType('fornecedor')}
+                                className={`flex-1 py-2 rounded-lg text-xs font-bold ${newPaymentType === 'fornecedor' ? 'bg-primary text-white' : 'bg-input-bg text-text-secondary'}`}
+                              >
+                                Fornecedor
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setNewPaymentType('funcionario')}
+                                className={`flex-1 py-2 rounded-lg text-xs font-bold ${newPaymentType === 'funcionario' ? 'bg-primary text-white' : 'bg-input-bg text-text-secondary'}`}
+                              >
+                                Funcionário
+                              </button>
+                            </div>
+                            <input
+                              type="text"
+                              placeholder={newPaymentType === 'fornecedor' ? 'Nome do fornecedor' : 'Nome do funcionário'}
+                              value={newPaymentName}
+                              onChange={e => setNewPaymentName(e.target.value)}
+                              className="w-full px-3 py-2 rounded-lg border border-border bg-input-bg text-sm"
+                              required
+                            />
+                            <div className="grid grid-cols-2 gap-3">
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                placeholder="Valor (R$)"
+                                value={newPaymentAmount}
+                                onChange={e => setNewPaymentAmount(e.target.value)}
+                                className="w-full px-3 py-2 rounded-lg border border-border bg-input-bg text-sm"
+                                required
+                              />
+                              <input
+                                type="date"
+                                value={newPaymentDueDate}
+                                onChange={e => setNewPaymentDueDate(e.target.value)}
+                                className="w-full px-3 py-2 rounded-lg border border-border bg-input-bg text-sm"
+                              />
+                            </div>
+                            <button type="submit" className="w-full py-2 bg-primary text-white rounded-lg text-sm font-bold">
+                              Salvar Pagamento
+                            </button>
+                          </form>
+                        )}
+
+                        {projPayments.length === 0 && !showCreatePayment && (
+                          <p className="text-sm text-text-light text-center py-4">Nenhum pagamento cadastrado ainda.</p>
+                        )}
+
+                        <div className="space-y-2">
+                          {projPayments.map(p => {
+                            const isLate = p.status !== 'pago' && p.due_date && p.due_date < today;
+                            const statusLabel = p.status === 'pago' ? 'Pago' : isLate ? 'Atrasado' : 'Pendente';
+                            const statusColor = p.status === 'pago' ? 'text-success' : isLate ? 'text-error' : 'text-warning';
+                            return (
+                              <div key={p.id} className="flex items-center justify-between p-3 bg-background rounded-xl border border-border">
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-semibold text-secondary">{p.payee_name}</span>
+                                    <span className="text-[10px] font-bold text-text-light uppercase">{p.payee_type === 'fornecedor' ? 'Fornecedor' : 'Funcionário'}</span>
+                                  </div>
+                                  <span className={`text-[11px] font-bold ${statusColor}`}>
+                                    {statusLabel}{p.due_date ? ` · Venc.: ${formatDate(p.due_date)}` : ''}{p.paid_date ? ` · Pago em: ${formatDate(p.paid_date)}` : ''}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-bold text-secondary">{fmt(p.amount)}</span>
+                                  {p.status !== 'pago' && (
+                                    <button
+                                      onClick={() => handleMarkPaymentPaid(p.id)}
+                                      className="text-[11px] font-bold text-success hover:underline"
+                                    >
+                                      Marcar pago
+                                    </button>
+                                  )}
+                                  <button onClick={() => handleDeletePayment(p.id)} className="text-text-light hover:text-error">
+                                    <Trash2 size={14} />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })()}
@@ -4209,6 +5301,29 @@ export default function App() {
                 <span className="text-xs font-bold uppercase tracking-wider text-text-secondary">Função Ativa: {ROLE_LABELS[profile?.role || 'funcionario']}</span>
               </div>
 
+              {/* Código de membro (PHD-0000) */}
+              <div className="p-4 bg-primary/5 border border-primary/20 rounded-xl text-left">
+                <span className="text-[10px] text-primary font-bold uppercase tracking-wider">Seu Código de Membro</span>
+                <div className="flex items-center justify-between gap-2 mt-1">
+                  <p className="text-lg font-bold text-primary font-display tracking-wider">{profile?.member_code || '—'}</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (profile?.member_code) {
+                        navigator.clipboard?.writeText(profile.member_code);
+                        alert('Código copiado! Envie para quem for te adicionar em uma obra.');
+                      }
+                    }}
+                    className="shrink-0 px-3 py-1.5 rounded-lg bg-primary text-white text-[11px] font-bold hover:bg-primary-dark transition"
+                  >
+                    Copiar
+                  </button>
+                </div>
+                <p className="text-[11px] text-text-secondary mt-2 leading-relaxed">
+                  Compartilhe este código (ou seu telefone) com o responsável da obra para ser adicionado à equipe. Ele não fica visível para outras pessoas por padrão.
+                </p>
+              </div>
+
               {/* User stats */}
               <div className="grid grid-cols-2 gap-4 text-left">
                 <div className="p-4 bg-background rounded-xl border border-border space-y-0.5">
@@ -4828,38 +5943,64 @@ export default function App() {
             </div>
 
             {inviteMode === 'existing' ? (
-              <form onSubmit={handleInviteMember} className="p-5 space-y-4">
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-text-secondary mb-1">Selecionar Profissional *</label>
-                  <select
-                    required
-                    value={inviteUserId}
-                    onChange={(e) => setInviteUserId(e.target.value)}
-                    className="w-full px-4 py-2 text-sm rounded-xl border border-border bg-surface-alt text-text focus:outline-none focus:ring-2 focus:ring-primary/20"
-                  >
-                    <option value="">Selecione o profissional...</option>
-                    {team.map(u => (
-                      <option key={u.id} value={u.id}>{u.full_name} ({ROLE_LABELS[u.role]})</option>
-                    ))}
-                  </select>
-                </div>
+              <div className="p-5 space-y-4">
+                <form onSubmit={handleSearchMember} className="space-y-2">
+                  <label className="block text-xs font-bold uppercase tracking-wider text-text-secondary mb-1">Código PHD ou Telefone *</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ex: PHD-0001 ou (11) 99999-9999"
+                      value={memberSearchTerm}
+                      onChange={(e) => { setMemberSearchTerm(e.target.value); setFoundMember(null); setMemberSearchError(''); }}
+                      className="flex-1 px-4 py-2 text-sm rounded-xl border border-border bg-surface-alt text-text focus:outline-none focus:ring-2 focus:ring-primary/20"
+                    />
+                    <button
+                      type="submit"
+                      disabled={searchingMember}
+                      className="px-4 py-2 bg-secondary hover:bg-secondary/90 text-white text-xs font-bold rounded-xl transition disabled:opacity-60"
+                    >
+                      {searchingMember ? '...' : 'Buscar'}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-text-light">Peça o código PHD (visível no perfil da pessoa) ou o telefone cadastrado por ela.</p>
+                </form>
 
-                <div className="flex gap-3 pt-2">
+                {memberSearchError && (
+                  <p className="text-xs font-semibold text-error">{memberSearchError}</p>
+                )}
+
+                {foundMember && (
+                  <div className="p-3 rounded-xl border border-primary/30 bg-primary/5 flex items-center gap-3">
+                    <img
+                      src={foundMember.avatar_url || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150'}
+                      alt={foundMember.full_name}
+                      className="w-10 h-10 rounded-full object-cover"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-bold text-secondary truncate">{foundMember.full_name}</p>
+                      <p className="text-[11px] text-text-secondary">{ROLE_LABELS[foundMember.role]} · {foundMember.member_code}</p>
+                    </div>
+                  </div>
+                )}
+
+                <form onSubmit={handleInviteMember} className="flex gap-3 pt-2">
                   <button
                     type="button"
-                    onClick={() => { setShowInviteMember(false); setInviteMode('existing'); }}
+                    onClick={() => { setShowInviteMember(false); setInviteMode('existing'); setMemberSearchTerm(''); setFoundMember(null); setMemberSearchError(''); }}
                     className="flex-1 py-2.5 border border-border bg-surface hover:bg-input-bg text-text-secondary text-sm font-semibold rounded-xl transition"
                   >
                     Cancelar
                   </button>
                   <button
                     type="submit"
-                    className="flex-1 py-2.5 bg-primary hover:bg-primary-dark text-white text-sm font-semibold rounded-xl transition shadow-md"
+                    disabled={!foundMember}
+                    className="flex-1 py-2.5 bg-primary hover:bg-primary-dark text-white text-sm font-semibold rounded-xl transition shadow-md disabled:opacity-50"
                   >
                     Designar
                   </button>
-                </div>
-              </form>
+                </form>
+              </div>
             ) : (
               <form onSubmit={handleAddNewEmployee} className="p-5 space-y-4">
                 <div>
@@ -4875,9 +6016,10 @@ export default function App() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-text-secondary mb-1">Telefone</label>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-text-secondary mb-1">Telefone *</label>
                   <input
                     type="text"
+                    required
                     placeholder="(11) 99999-9999"
                     value={newEmployeePhone}
                     onChange={(e) => setNewEmployeePhone(e.target.value)}
@@ -4990,7 +6132,29 @@ export default function App() {
         const now = new Date();
 
         return (
-          <div className="fixed top-0 pointer-events-none" style={{ left: '-9999px', width: '800px' }}>
+          <div
+            className="fixed top-0 pointer-events-none"
+            style={{
+              left: '-9999px',
+              width: '800px',
+              // Força as cores do tema claro no relatório, independente do
+              // modo escuro do celular (o card sempre tem fundo branco,
+              // então o texto precisa ficar sempre escuro pra ser legível).
+              ['--color-secondary' as any]: '#0a0e27',
+              ['--color-text' as any]: '#0a0e27',
+              ['--color-text-secondary' as any]: '#475569',
+              ['--color-text-light' as any]: '#94a3b8',
+              ['--color-border' as any]: '#e2e8f5',
+              ['--color-border-dark' as any]: '#cbd5e1',
+              ['--color-surface' as any]: '#ffffff',
+              ['--color-surface-alt' as any]: '#f8faff',
+              ['--color-background' as any]: '#f0f4ff',
+              ['--color-input-bg' as any]: '#f1f5ff',
+              ['--color-primary-50' as any]: '#eff6ff',
+              ['--color-primary-100' as any]: '#dbeafe',
+              ['--color-error-light' as any]: '#fef2f2',
+            } as React.CSSProperties}
+          >
             <div ref={reportCardRef} className="bg-white p-10 w-[800px]" style={{ fontFamily: 'inherit' }}>
               {/* Cabeçalho */}
               <div className="flex items-center justify-between border-b-4 border-primary pb-5 mb-6">

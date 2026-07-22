@@ -7,6 +7,7 @@ export interface Profile {
   phone: string | null;
   avatar_url: string | null;
   created_at: string;
+  member_code: string;
 }
 
 export interface Project {
@@ -19,6 +20,7 @@ export interface Project {
   start_date: string | null;
   deadline: string | null;
   progress: number;
+  built_area_m2?: number | null;
   cover_image?: string | null;
   project_pdf?: string | null;
   created_by: string | null;
@@ -138,6 +140,82 @@ export interface IncidentReport {
   injured_person: string | null;
   action_taken: string | null;
   photo?: string | null; // base64
+  created_by: string | null;
+  created_at: string;
+}
+
+// ==========================================
+// FINANCEIRO: ORÇAMENTO E FLUXO DE CAIXA
+// ==========================================
+
+export interface BudgetItem {
+  id: string;
+  project_id: string;
+  category: string; // ex: Mão de obra, Materiais, Equipamentos, Terceirizados
+  planned_value: number; // valor previsto/orçado
+  actual_value: number; // valor realizado/gasto até agora
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface CashFlowEntry {
+  id: string;
+  project_id: string;
+  entry_date: string; // YYYY-MM-DD
+  type: 'entrada' | 'saida';
+  description: string;
+  amount: number;
+  category: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+// ==========================================
+// COTAÇÃO DE FORNECEDORES
+// ==========================================
+
+export interface SupplierQuote {
+  id: string;
+  material_id: string;
+  project_id: string;
+  supplier_name: string;
+  unit_price: number;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+// ==========================================
+// PAGAMENTOS A FORNECEDORES E FUNCIONÁRIOS
+// ==========================================
+
+export interface Payment {
+  id: string;
+  project_id: string;
+  payee_name: string;
+  payee_type: 'fornecedor' | 'funcionario';
+  amount: number;
+  due_date: string | null; // YYYY-MM-DD
+  paid_date: string | null; // YYYY-MM-DD, null = ainda não pago
+  status: 'pendente' | 'pago' | 'atrasado';
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+// ==========================================
+// NOTAS FISCAIS / COMPROVANTES DE MATERIAIS
+// ==========================================
+
+export interface MaterialReceipt {
+  id: string;
+  material_id: string;
+  project_id: string;
+  amount: number;
+  purchased_at: string; // YYYY-MM-DD
+  photo: string; // base64 (foto da nota fiscal/comprovante)
+  notes: string | null;
   created_by: string | null;
   created_at: string;
 }
