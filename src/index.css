@@ -107,3 +107,11 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-text-light);
 }
+
+/* Fundo estilo "planta baixa" — grade sutil de papel de projeto */
+.bg-blueprint {
+  background-image:
+    linear-gradient(rgba(0, 102, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 102, 255, 0.05) 1px, transparent 1px);
+  background-size: 16px 16px;
+}

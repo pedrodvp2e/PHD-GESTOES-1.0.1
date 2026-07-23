@@ -172,6 +172,73 @@ export interface CashFlowEntry {
 }
 
 // ==========================================
+// ORDEM DE SERVIÇO (OS)
+// ==========================================
+
+export interface ServiceOrderMaterialItem {
+  name: string;
+  quantity: number;
+  unit_price: number;
+}
+
+export interface ServiceOrder {
+  id: string;
+  project_id: string;
+  os_number: string; // ex: OS-2026-0042
+
+  // Datas
+  issued_at: string; // data/hora de emissão (ISO)
+  start_date: string | null; // data prevista de início
+  deadline: string | null; // prazo de conclusão
+
+  // Dados da empresa prestadora
+  company_name: string;
+  company_cnpj: string;
+  company_contact: string;
+  company_responsible: string; // responsável técnico
+
+  // Dados do cliente
+  client_name: string;
+  client_document: string; // CPF/CNPJ
+  client_phone: string;
+  client_email: string;
+  client_address: string; // endereço exato de execução
+
+  // Escopo
+  problem_description: string;
+  execution_description: string;
+
+  // Insumos e mão de obra
+  materials: ServiceOrderMaterialItem[];
+  team_names: string; // nomes dos profissionais/equipe envolvidos, separados por vírgula
+
+  // Comercial/financeiro
+  labor_value: number;
+  payment_method: string;
+
+  // Encerramento
+  status: 'aberta' | 'em_execucao' | 'concluida' | 'cancelada';
+  acceptance_notes: string;
+  client_signature_name: string;
+  client_signed_at: string | null;
+  technician_signature_name: string;
+  technician_signed_at: string | null;
+
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface ProgressSnapshot {
+  id: string;
+  project_id: string;
+  snapshot_date: string; // YYYY-MM-DD — um registro por dia (o mais recente do dia substitui)
+  physical_progress: number; // % de progresso físico da obra naquela data
+  financial_progress: number; // % do orçamento total já gasto naquela data
+  created_by: string | null;
+  created_at: string;
+}
+
+// ==========================================
 // COTAÇÃO DE FORNECEDORES
 // ==========================================
 

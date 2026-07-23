@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { Profile, Project, ProjectMember, Task, Material, Message, LocalNotification, UserRole, DiaryEntry, SafetyChecklistItem, IncidentReport, BudgetItem, CashFlowEntry, SupplierQuote, Payment, MaterialReceipt } from '@/types';
+import { Profile, Project, ProjectMember, Task, Material, Message, LocalNotification, UserRole, DiaryEntry, SafetyChecklistItem, IncidentReport, BudgetItem, CashFlowEntry, SupplierQuote, Payment, MaterialReceipt, ProgressSnapshot, ServiceOrder } from '@/types';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -429,6 +429,10 @@ class MockStorage {
 
   getBudgetItems(): BudgetItem[] { return this.get('mock_budget_items', []); }
   setBudgetItems(data: BudgetItem[]) { this.set('mock_budget_items', data); }
+  getProgressSnapshots(): ProgressSnapshot[] { return this.get('mock_progress_snapshots', []); }
+  setProgressSnapshots(data: ProgressSnapshot[]) { this.set('mock_progress_snapshots', data); }
+  getServiceOrders(): ServiceOrder[] { return this.get('mock_service_orders', []); }
+  setServiceOrders(data: ServiceOrder[]) { this.set('mock_service_orders', data); }
 
   getCashFlow(): CashFlowEntry[] { return this.get('mock_cash_flow', []); }
   setCashFlow(data: CashFlowEntry[]) { this.set('mock_cash_flow', data); }
@@ -771,6 +775,67 @@ export const supabase = isRealSupabaseConfigured && realSupabase ? realSupabase 
 // Faz upload da foto de perfil do usuário. Usa o Supabase Storage (bucket
 // "avatars") quando o projeto está com Supabase real configurado; caso
 // contrário, converte a imagem em base64 e guarda localmente (mock).
+/**
+ * Envia uma foto de obra (diário, ocorrência ou nota fiscal de material)
+ * para o bucket privado "project-photos". No modo real, retorna uma URL
+ * assinada (o bucket não é público); no modo demo, converte pra base64
+ * como já era antes.
+ */
+export async function uploadProjectPhoto(
+  projectId: string,
+  kind: 'diario' | 'ocorrencia' | 'nota-fiscal',
+  file: File
+): Promise<{ url: string | null; error: string | null }> {
+  if (!file.type.startsWith('image/')) {
+    return { url: null, error: 'Selecione um arquivo de imagem válido.' };
+  }
+  const MAX_SIZE_MB = 8;
+  if (file.size > MAX_SIZE_MB * 1024 * 1024) {
+    return { url: null, error: `A imagem deve ter no máximo ${MAX_SIZE_MB}MB.` };
+  }
+
+  if (isRealSupabaseConfigured && realSupabase) {
+    try {
+      const fileExt = file.name.split('.').pop() || 'jpg';
+      const filePath = `${projectId}/${kind}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${fileExt}`;
+
+      const { error: uploadError } = await realSupabase.storage
+        .from('project-photos')
+        .upload(filePath, file, { cacheControl: '3600' });
+
+      if (uploadError) {
+        return { url: null, error: uploadError.message };
+      }
+
+      // Bucket privado: gera URL assinada válida por 1 ano (renovável ao reabrir os dados)
+      const { data: signedData, error: signedError } = await realSupabase.storage
+        .from('project-photos')
+        .createSignedUrl(filePath, 60 * 60 * 24 * 365);
+
+      if (signedError || !signedData) {
+        return { url: null, error: signedError?.message || 'Falha ao gerar link da imagem.' };
+      }
+
+      return { url: signedData.signedUrl, error: null };
+    } catch (err: any) {
+      return { url: null, error: err?.message || 'Falha ao enviar a imagem.' };
+    }
+  }
+
+  // Modo mock/sandbox: converte para base64, como antes
+  try {
+    const base64: string = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    return { url: base64, error: null };
+  } catch (err: any) {
+    return { url: null, error: err?.message || 'Falha ao processar a imagem.' };
+  }
+}
+
 export async function uploadAvatar(userId: string, file: File): Promise<{ url: string | null; error: string | null }> {
   // Validações básicas
   if (!file.type.startsWith('image/')) {

@@ -23,8 +23,9 @@ import { shareElementAsPdf } from './lib/sharePdfReport';
 import { getProgressForecast } from './lib/progressForecast';
 import { extractInvoiceText, parseInvoiceMaterials, InvoiceMaterialCandidate } from './lib/ocrInvoice';
 import appIcon from './assets/images/icon.png';
-import { supabase, mockDb, ROLE_LABELS, ROLE_COLORS, STATUS_LABELS, STATUS_COLORS, uploadAvatar, isRealSupabaseConfigured, realSupabase, generateMemberCode } from './lib/supabase';
-import { Project, Task, Material, Message, LocalNotification, UserRole, Profile, ProjectMember, DiaryEntry, SafetyChecklistItem, IncidentReport, DEFAULT_SAFETY_ITEMS, BudgetItem, CashFlowEntry, SupplierQuote, Payment, MaterialReceipt } from './types';
+import { supabase, mockDb, ROLE_LABELS, ROLE_COLORS, STATUS_LABELS, STATUS_COLORS, uploadAvatar, uploadProjectPhoto, isRealSupabaseConfigured, realSupabase, generateMemberCode } from './lib/supabase';
+import { Project, Task, Material, Message, LocalNotification, UserRole, Profile, ProjectMember, DiaryEntry, SafetyChecklistItem, IncidentReport, DEFAULT_SAFETY_ITEMS, BudgetItem, CashFlowEntry, SupplierQuote, Payment, MaterialReceipt, ProgressSnapshot, ServiceOrder, ServiceOrderMaterialItem } from './types';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 export default function App() {
   const { session, profile, loading, signIn, signUp, signOut, refreshProfile, resetPassword } = useAuth();
@@ -66,7 +67,7 @@ export default function App() {
   
   // Drill-down project view
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [projectSubTab, setProjectSubTab] = useState<'overview' | 'tasks' | 'materials' | 'diary' | 'safety' | 'team' | 'messages' | 'financeiro'>('overview');
+  const [projectSubTab, setProjectSubTab] = useState<'overview' | 'tasks' | 'materials' | 'diary' | 'safety' | 'team' | 'messages' | 'financeiro' | 'os'>('overview');
 
   // Authentication mode and form states
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
@@ -91,6 +92,8 @@ export default function App() {
   const [supplierQuotes, setSupplierQuotes] = useState<SupplierQuote[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [materialReceipts, setMaterialReceipts] = useState<MaterialReceipt[]>([]);
+  const [progressSnapshots, setProgressSnapshots] = useState<ProgressSnapshot[]>([]);
+  const [serviceOrders, setServiceOrders] = useState<ServiceOrder[]>([]);
   const [team, setTeam] = useState<Profile[]>([]);
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
   const [notifications, setNotifications] = useState<LocalNotification[]>([]);
@@ -181,6 +184,13 @@ export default function App() {
           { data: diaryData },
           { data: safetyData },
           { data: incidentsData },
+          { data: budgetData },
+          { data: cashFlowData },
+          { data: quotesData },
+          { data: paymentsData },
+          { data: receiptsData },
+          { data: snapshotsData },
+          { data: serviceOrdersData },
         ] = await Promise.all([
           realSupabase.from('projects').select('*').order('created_at', { ascending: false }),
           realSupabase.from('tasks').select('*'),
@@ -191,6 +201,13 @@ export default function App() {
           realSupabase.from('diary_entries').select('*').order('entry_date', { ascending: false }),
           realSupabase.from('safety_checklist_items').select('*'),
           realSupabase.from('incidents').select('*').order('occurred_at', { ascending: false }),
+          realSupabase.from('budget_items').select('*'),
+          realSupabase.from('cash_flow').select('*').order('entry_date', { ascending: false }),
+          realSupabase.from('supplier_quotes').select('*'),
+          realSupabase.from('payments').select('*'),
+          realSupabase.from('material_receipts').select('*').order('purchased_at', { ascending: false }),
+          realSupabase.from('progress_snapshots').select('*').order('snapshot_date', { ascending: true }),
+          realSupabase.from('service_orders').select('*').order('created_at', { ascending: false }),
         ]);
 
         setProjects((projectsData as Project[]) || []);
@@ -202,12 +219,13 @@ export default function App() {
         setDiaryEntries((diaryData as DiaryEntry[]) || []);
         setSafetyItems((safetyData as SafetyChecklistItem[]) || []);
         setIncidents((incidentsData as IncidentReport[]) || []);
-        // Financeiro e cotações permanecem locais ao dispositivo (sem tabela no banco ainda)
-        setBudgetItems(mockDb.getBudgetItems());
-        setCashFlow(mockDb.getCashFlow());
-        setSupplierQuotes(mockDb.getSupplierQuotes());
-        setPayments(mockDb.getPayments());
-        setMaterialReceipts(mockDb.getMaterialReceipts());
+        setBudgetItems((budgetData as BudgetItem[]) || []);
+        setCashFlow((cashFlowData as CashFlowEntry[]) || []);
+        setSupplierQuotes((quotesData as SupplierQuote[]) || []);
+        setPayments((paymentsData as Payment[]) || []);
+        setMaterialReceipts((receiptsData as MaterialReceipt[]) || []);
+        setProgressSnapshots((snapshotsData as ProgressSnapshot[]) || []);
+        setServiceOrders((serviceOrdersData as ServiceOrder[]) || []);
         // Notificações permanecem locais ao dispositivo (não há tabela no banco)
         setNotifications(mockDb.getNotifications());
       } catch (err) {
@@ -232,6 +250,8 @@ export default function App() {
     setSupplierQuotes(mockDb.getSupplierQuotes());
     setPayments(mockDb.getPayments());
     setMaterialReceipts(mockDb.getMaterialReceipts());
+    setProgressSnapshots(mockDb.getProgressSnapshots());
+    setServiceOrders(mockDb.getServiceOrders());
   };
 
   // Segurança e Permissões: status da permissão nativa de notificações
@@ -962,10 +982,14 @@ export default function App() {
     loadData();
   };
 
-  const handleDiaryPhotoSelect = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = () => setNewDiaryPhoto(reader.result as string);
-    reader.readAsDataURL(file);
+  const handleDiaryPhotoSelect = async (file: File) => {
+    if (!selectedProjectId) return;
+    const { url, error } = await uploadProjectPhoto(selectedProjectId, 'diario', file);
+    if (error) {
+      alert('Não foi possível enviar a foto: ' + error);
+      return;
+    }
+    setNewDiaryPhoto(url);
   };
 
   // ==========================================
@@ -976,24 +1000,31 @@ export default function App() {
   const [newBudgetPlanned, setNewBudgetPlanned] = useState('');
   const [newBudgetActual, setNewBudgetActual] = useState('');
 
-  const handleCreateBudgetItem = (e: React.FormEvent) => {
+  const handleCreateBudgetItem = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newBudgetCategory.trim() || !selectedProjectId) return;
 
-    const newItem: BudgetItem = {
-      id: `budget-${Date.now()}`,
+    const basePayload = {
       project_id: selectedProjectId,
       category: newBudgetCategory.trim(),
       planned_value: Number(newBudgetPlanned) || 0,
       actual_value: Number(newBudgetActual) || 0,
       notes: null,
       created_by: profile?.id || 'guest',
-      created_at: new Date().toISOString(),
     };
-    const current = mockDb.getBudgetItems();
-    current.unshift(newItem);
-    mockDb.setBudgetItems(current);
-    setBudgetItems(current);
+
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('budget_items').insert(basePayload);
+      if (error) { alert('Não foi possível salvar a categoria: ' + error.message); return; }
+      const { data } = await realSupabase.from('budget_items').select('*').eq('project_id', selectedProjectId);
+      setBudgetItems((data as BudgetItem[]) || []);
+    } else {
+      const newItem: BudgetItem = { id: `budget-${Date.now()}`, created_at: new Date().toISOString(), ...basePayload };
+      const current = mockDb.getBudgetItems();
+      current.unshift(newItem);
+      mockDb.setBudgetItems(current);
+      setBudgetItems(current);
+    }
 
     setNewBudgetCategory('');
     setNewBudgetPlanned('');
@@ -1001,10 +1032,16 @@ export default function App() {
     setShowCreateBudgetItem(false);
   };
 
-  const handleDeleteBudgetItem = (id: string) => {
-    const current = mockDb.getBudgetItems().filter(b => b.id !== id);
-    mockDb.setBudgetItems(current);
-    setBudgetItems(current);
+  const handleDeleteBudgetItem = async (id: string) => {
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('budget_items').delete().eq('id', id);
+      if (error) { console.error('Erro ao apagar categoria:', error); return; }
+      setBudgetItems(prev => prev.filter(b => b.id !== id));
+    } else {
+      const current = mockDb.getBudgetItems().filter(b => b.id !== id);
+      mockDb.setBudgetItems(current);
+      setBudgetItems(current);
+    }
   };
 
   // ==========================================
@@ -1017,12 +1054,11 @@ export default function App() {
   const [newCashFlowAmount, setNewCashFlowAmount] = useState('');
   const [newCashFlowCategory, setNewCashFlowCategory] = useState('');
 
-  const handleCreateCashFlowEntry = (e: React.FormEvent) => {
+  const handleCreateCashFlowEntry = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCashFlowDescription.trim() || !newCashFlowAmount || !selectedProjectId) return;
 
-    const newEntry: CashFlowEntry = {
-      id: `cashflow-${Date.now()}`,
+    const basePayload = {
       project_id: selectedProjectId,
       entry_date: newCashFlowDate,
       type: newCashFlowType,
@@ -1030,12 +1066,20 @@ export default function App() {
       amount: Number(newCashFlowAmount) || 0,
       category: newCashFlowCategory.trim() || null,
       created_by: profile?.id || 'guest',
-      created_at: new Date().toISOString(),
     };
-    const current = mockDb.getCashFlow();
-    current.unshift(newEntry);
-    mockDb.setCashFlow(current);
-    setCashFlow(current);
+
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('cash_flow').insert(basePayload);
+      if (error) { alert('Não foi possível salvar o lançamento: ' + error.message); return; }
+      const { data } = await realSupabase.from('cash_flow').select('*').eq('project_id', selectedProjectId);
+      setCashFlow((data as CashFlowEntry[]) || []);
+    } else {
+      const newEntry: CashFlowEntry = { id: `cashflow-${Date.now()}`, created_at: new Date().toISOString(), ...basePayload };
+      const current = mockDb.getCashFlow();
+      current.unshift(newEntry);
+      mockDb.setCashFlow(current);
+      setCashFlow(current);
+    }
 
     setNewCashFlowType('saida');
     setNewCashFlowDate(new Date().toISOString().slice(0, 10));
@@ -1045,10 +1089,16 @@ export default function App() {
     setShowCreateCashFlow(false);
   };
 
-  const handleDeleteCashFlowEntry = (id: string) => {
-    const current = mockDb.getCashFlow().filter(c => c.id !== id);
-    mockDb.setCashFlow(current);
-    setCashFlow(current);
+  const handleDeleteCashFlowEntry = async (id: string) => {
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('cash_flow').delete().eq('id', id);
+      if (error) { console.error('Erro ao apagar lançamento:', error); return; }
+      setCashFlow(prev => prev.filter(c => c.id !== id));
+    } else {
+      const current = mockDb.getCashFlow().filter(c => c.id !== id);
+      mockDb.setCashFlow(current);
+      setCashFlow(current);
+    }
   };
 
   // ==========================================
@@ -1058,33 +1108,46 @@ export default function App() {
   const [newQuoteSupplier, setNewQuoteSupplier] = useState('');
   const [newQuotePrice, setNewQuotePrice] = useState('');
 
-  const handleCreateSupplierQuote = (e: React.FormEvent, materialId: string) => {
+  const handleCreateSupplierQuote = async (e: React.FormEvent, materialId: string) => {
     e.preventDefault();
     if (!newQuoteSupplier.trim() || !newQuotePrice || !selectedProjectId) return;
 
-    const newQuote: SupplierQuote = {
-      id: `quote-${Date.now()}`,
+    const basePayload = {
       material_id: materialId,
       project_id: selectedProjectId,
       supplier_name: newQuoteSupplier.trim(),
       unit_price: Number(newQuotePrice) || 0,
       notes: null,
       created_by: profile?.id || 'guest',
-      created_at: new Date().toISOString(),
     };
-    const current = mockDb.getSupplierQuotes();
-    current.unshift(newQuote);
-    mockDb.setSupplierQuotes(current);
-    setSupplierQuotes(current);
+
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('supplier_quotes').insert(basePayload);
+      if (error) { alert('Não foi possível salvar a cotação: ' + error.message); return; }
+      const { data } = await realSupabase.from('supplier_quotes').select('*').eq('project_id', selectedProjectId);
+      setSupplierQuotes((data as SupplierQuote[]) || []);
+    } else {
+      const newQuote: SupplierQuote = { id: `quote-${Date.now()}`, created_at: new Date().toISOString(), ...basePayload };
+      const current = mockDb.getSupplierQuotes();
+      current.unshift(newQuote);
+      mockDb.setSupplierQuotes(current);
+      setSupplierQuotes(current);
+    }
 
     setNewQuoteSupplier('');
     setNewQuotePrice('');
   };
 
-  const handleDeleteSupplierQuote = (id: string) => {
-    const current = mockDb.getSupplierQuotes().filter(q => q.id !== id);
-    mockDb.setSupplierQuotes(current);
-    setSupplierQuotes(current);
+  const handleDeleteSupplierQuote = async (id: string) => {
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('supplier_quotes').delete().eq('id', id);
+      if (error) { console.error('Erro ao apagar cotação:', error); return; }
+      setSupplierQuotes(prev => prev.filter(q => q.id !== id));
+    } else {
+      const current = mockDb.getSupplierQuotes().filter(q => q.id !== id);
+      mockDb.setSupplierQuotes(current);
+      setSupplierQuotes(current);
+    }
   };
 
   // ==========================================
@@ -1096,27 +1159,34 @@ export default function App() {
   const [newPaymentAmount, setNewPaymentAmount] = useState('');
   const [newPaymentDueDate, setNewPaymentDueDate] = useState(() => new Date().toISOString().slice(0, 10));
 
-  const handleCreatePayment = (e: React.FormEvent) => {
+  const handleCreatePayment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newPaymentName.trim() || !newPaymentAmount || !selectedProjectId) return;
 
-    const newPayment: Payment = {
-      id: `payment-${Date.now()}`,
+    const basePayload = {
       project_id: selectedProjectId,
       payee_name: newPaymentName.trim(),
       payee_type: newPaymentType,
       amount: Number(newPaymentAmount) || 0,
       due_date: newPaymentDueDate || null,
       paid_date: null,
-      status: 'pendente',
+      status: 'pendente' as const,
       notes: null,
       created_by: profile?.id || 'guest',
-      created_at: new Date().toISOString(),
     };
-    const current = mockDb.getPayments();
-    current.unshift(newPayment);
-    mockDb.setPayments(current);
-    setPayments(current);
+
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('payments').insert(basePayload);
+      if (error) { alert('Não foi possível salvar o pagamento: ' + error.message); return; }
+      const { data } = await realSupabase.from('payments').select('*').eq('project_id', selectedProjectId);
+      setPayments((data as Payment[]) || []);
+    } else {
+      const newPayment: Payment = { id: `payment-${Date.now()}`, created_at: new Date().toISOString(), ...basePayload };
+      const current = mockDb.getPayments();
+      current.unshift(newPayment);
+      mockDb.setPayments(current);
+      setPayments(current);
+    }
 
     setNewPaymentName('');
     setNewPaymentType('fornecedor');
@@ -1125,18 +1195,29 @@ export default function App() {
     setShowCreatePayment(false);
   };
 
-  const handleMarkPaymentPaid = (id: string) => {
-    const current = mockDb.getPayments().map(p =>
-      p.id === id ? { ...p, status: 'pago' as const, paid_date: new Date().toISOString().slice(0, 10) } : p
-    );
-    mockDb.setPayments(current);
-    setPayments(current);
+  const handleMarkPaymentPaid = async (id: string) => {
+    const updates = { status: 'pago' as const, paid_date: new Date().toISOString().slice(0, 10) };
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('payments').update(updates).eq('id', id);
+      if (error) { console.error('Erro ao marcar pagamento como pago:', error); return; }
+      setPayments(prev => prev.map(p => p.id === id ? { ...p, ...updates } : p));
+    } else {
+      const current = mockDb.getPayments().map(p => p.id === id ? { ...p, ...updates } : p);
+      mockDb.setPayments(current);
+      setPayments(current);
+    }
   };
 
-  const handleDeletePayment = (id: string) => {
-    const current = mockDb.getPayments().filter(p => p.id !== id);
-    mockDb.setPayments(current);
-    setPayments(current);
+  const handleDeletePayment = async (id: string) => {
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('payments').delete().eq('id', id);
+      if (error) { console.error('Erro ao apagar pagamento:', error); return; }
+      setPayments(prev => prev.filter(p => p.id !== id));
+    } else {
+      const current = mockDb.getPayments().filter(p => p.id !== id);
+      mockDb.setPayments(current);
+      setPayments(current);
+    }
   };
 
   // ==========================================
@@ -1147,18 +1228,21 @@ export default function App() {
   const [newReceiptDate, setNewReceiptDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [newReceiptPhoto, setNewReceiptPhoto] = useState<string | null>(null);
 
-  const handleReceiptPhotoSelect = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = () => setNewReceiptPhoto(reader.result as string);
-    reader.readAsDataURL(file);
+  const handleReceiptPhotoSelect = async (file: File) => {
+    if (!selectedProjectId) return;
+    const { url, error } = await uploadProjectPhoto(selectedProjectId, 'nota-fiscal', file);
+    if (error) {
+      alert('Não foi possível enviar a foto: ' + error);
+      return;
+    }
+    setNewReceiptPhoto(url);
   };
 
-  const handleCreateMaterialReceipt = (e: React.FormEvent, materialId: string) => {
+  const handleCreateMaterialReceipt = async (e: React.FormEvent, materialId: string) => {
     e.preventDefault();
     if (!newReceiptAmount || !newReceiptPhoto || !selectedProjectId) return;
 
-    const newReceipt: MaterialReceipt = {
-      id: `receipt-${Date.now()}`,
+    const basePayload = {
       material_id: materialId,
       project_id: selectedProjectId,
       amount: Number(newReceiptAmount) || 0,
@@ -1166,12 +1250,24 @@ export default function App() {
       photo: newReceiptPhoto,
       notes: null,
       created_by: profile?.id || 'guest',
-      created_at: new Date().toISOString(),
     };
-    const current = mockDb.getMaterialReceipts();
-    current.unshift(newReceipt);
-    mockDb.setMaterialReceipts(current);
-    setMaterialReceipts(current);
+
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('material_receipts').insert(basePayload);
+      if (error) {
+        console.error('Erro ao registrar nota fiscal:', error);
+        alert('Não foi possível registrar a nota fiscal: ' + error.message);
+        return;
+      }
+      const { data } = await realSupabase.from('material_receipts').select('*').eq('project_id', selectedProjectId);
+      setMaterialReceipts((data as MaterialReceipt[]) || []);
+    } else {
+      const newReceipt: MaterialReceipt = { id: `receipt-${Date.now()}`, created_at: new Date().toISOString(), ...basePayload };
+      const current = mockDb.getMaterialReceipts();
+      current.unshift(newReceipt);
+      mockDb.setMaterialReceipts(current);
+      setMaterialReceipts(current);
+    }
 
     setNewReceiptAmount('');
     setNewReceiptDate(new Date().toISOString().slice(0, 10));
@@ -1179,10 +1275,16 @@ export default function App() {
     setReceiptMaterialId(null);
   };
 
-  const handleDeleteMaterialReceipt = (id: string) => {
-    const current = mockDb.getMaterialReceipts().filter(r => r.id !== id);
-    mockDb.setMaterialReceipts(current);
-    setMaterialReceipts(current);
+  const handleDeleteMaterialReceipt = async (id: string) => {
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('material_receipts').delete().eq('id', id);
+      if (error) { console.error('Erro ao apagar nota fiscal:', error); return; }
+      setMaterialReceipts(prev => prev.filter(r => r.id !== id));
+    } else {
+      const current = mockDb.getMaterialReceipts().filter(r => r.id !== id);
+      mockDb.setMaterialReceipts(current);
+      setMaterialReceipts(current);
+    }
   };
 
   // Área construída da obra (usada no cálculo de custo por m²)
@@ -1201,7 +1303,230 @@ export default function App() {
     loadData();
   };
 
-  // Checklist de EPI e Segurança
+  // ==========================================
+  // CURVA S: registra o ponto de hoje (progresso físico x financeiro)
+  // ==========================================
+  const handleRecordProgressSnapshot = async () => {
+    if (!selectedProjectId) return;
+    const currentProj = projects.find(p => p.id === selectedProjectId);
+    if (!currentProj) return;
+
+    const today = new Date().toISOString().slice(0, 10);
+    const projBudget = budgetItems.filter(b => b.project_id === selectedProjectId);
+    const totalPlanned = projBudget.reduce((sum, b) => sum + b.planned_value, 0);
+    const totalActual = projBudget.reduce((sum, b) => sum + b.actual_value, 0);
+    const totalPaidPayments = payments.filter(p => p.project_id === selectedProjectId && p.status === 'pago').reduce((sum, p) => sum + p.amount, 0);
+    const totalGasto = totalActual + totalPaidPayments;
+    const financialProgress = totalPlanned > 0 ? Math.min(999, (totalGasto / totalPlanned) * 100) : 0;
+    const physicalProgress = currentProj.progress || 0;
+
+    const basePayload = {
+      project_id: selectedProjectId,
+      snapshot_date: today,
+      physical_progress: Math.round(physicalProgress * 100) / 100,
+      financial_progress: Math.round(financialProgress * 100) / 100,
+      created_by: profile?.id || 'guest',
+    };
+
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase
+        .from('progress_snapshots')
+        .upsert(basePayload, { onConflict: 'project_id,snapshot_date' });
+      if (error) {
+        alert('Não foi possível registrar o ponto da curva: ' + error.message);
+        return;
+      }
+      const { data } = await realSupabase.from('progress_snapshots').select('*').eq('project_id', selectedProjectId).order('snapshot_date', { ascending: true });
+      setProgressSnapshots((data as ProgressSnapshot[]) || []);
+    } else {
+      const current = mockDb.getProgressSnapshots();
+      const idx = current.findIndex(s => s.project_id === selectedProjectId && s.snapshot_date === today);
+      if (idx !== -1) {
+        current[idx] = { ...current[idx], ...basePayload };
+      } else {
+        current.push({ id: `snap-${Date.now()}`, created_at: new Date().toISOString(), ...basePayload });
+      }
+      mockDb.setProgressSnapshots(current);
+      setProgressSnapshots(current);
+    }
+  };
+
+  // ==========================================
+  // ORDEM DE SERVIÇO (OS)
+  // ==========================================
+  const emptyOsForm = () => ({
+    start_date: '',
+    deadline: '',
+    company_name: '',
+    company_cnpj: '',
+    company_contact: '',
+    company_responsible: '',
+    client_name: '',
+    client_document: '',
+    client_phone: '',
+    client_email: '',
+    client_address: '',
+    problem_description: '',
+    execution_description: '',
+    materials: [] as ServiceOrderMaterialItem[],
+    team_names: '',
+    labor_value: '',
+    payment_method: '',
+  });
+  const [showCreateServiceOrder, setShowCreateServiceOrder] = useState(false);
+  const [osForm, setOsForm] = useState(emptyOsForm());
+  const [osMaterialDraft, setOsMaterialDraft] = useState({ name: '', quantity: '', unit_price: '' });
+  const [viewingServiceOrderId, setViewingServiceOrderId] = useState<string | null>(null);
+  const [sharingServiceOrder, setSharingServiceOrder] = useState(false);
+  const osShareCardRef = useRef<HTMLDivElement>(null);
+
+  // Pré-preenche o formulário com os dados da empresa/cliente usados na última OS,
+  // pra não precisar redigitar CNPJ/responsável técnico toda hora.
+  const openCreateServiceOrder = () => {
+    const proj = projects.find(p => p.id === selectedProjectId);
+    const lastOs = serviceOrders
+      .filter(o => o.project_id === selectedProjectId)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+    setOsForm({
+      ...emptyOsForm(),
+      company_name: lastOs?.company_name || '',
+      company_cnpj: lastOs?.company_cnpj || '',
+      company_contact: lastOs?.company_contact || '',
+      company_responsible: lastOs?.company_responsible || profile?.full_name || '',
+      client_name: proj?.client_name || lastOs?.client_name || '',
+      client_address: proj?.address || lastOs?.client_address || '',
+    });
+    setShowCreateServiceOrder(true);
+  };
+
+  const addOsMaterial = () => {
+    if (!osMaterialDraft.name.trim() || !osMaterialDraft.quantity) return;
+    setOsForm(prev => ({
+      ...prev,
+      materials: [...prev.materials, {
+        name: osMaterialDraft.name.trim(),
+        quantity: Number(osMaterialDraft.quantity) || 0,
+        unit_price: Number(osMaterialDraft.unit_price) || 0,
+      }],
+    }));
+    setOsMaterialDraft({ name: '', quantity: '', unit_price: '' });
+  };
+
+  const removeOsMaterial = (idx: number) => {
+    setOsForm(prev => ({ ...prev, materials: prev.materials.filter((_, i) => i !== idx) }));
+  };
+
+  const handleCreateServiceOrder = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedProjectId || !osForm.client_name.trim()) return;
+
+    const year = new Date().getFullYear();
+    const existingThisYear = serviceOrders.filter(o => o.os_number.includes(`-${year}-`));
+    const nextSeq = existingThisYear.length + 1;
+    const osNumber = `OS-${year}-${String(nextSeq).padStart(4, '0')}`;
+
+    const materialsTotal = osForm.materials.reduce((sum, m) => sum + m.quantity * m.unit_price, 0);
+
+    const basePayload = {
+      project_id: selectedProjectId,
+      os_number: osNumber,
+      issued_at: new Date().toISOString(),
+      start_date: osForm.start_date || null,
+      deadline: osForm.deadline || null,
+      company_name: osForm.company_name.trim(),
+      company_cnpj: osForm.company_cnpj.trim(),
+      company_contact: osForm.company_contact.trim(),
+      company_responsible: osForm.company_responsible.trim(),
+      client_name: osForm.client_name.trim(),
+      client_document: osForm.client_document.trim(),
+      client_phone: osForm.client_phone.trim(),
+      client_email: osForm.client_email.trim(),
+      client_address: osForm.client_address.trim(),
+      problem_description: osForm.problem_description.trim(),
+      execution_description: osForm.execution_description.trim(),
+      materials: osForm.materials,
+      team_names: osForm.team_names.trim(),
+      labor_value: Number(osForm.labor_value) || 0,
+      payment_method: osForm.payment_method.trim(),
+      status: 'aberta' as const,
+      acceptance_notes: '',
+      client_signature_name: '',
+      client_signed_at: null,
+      technician_signature_name: '',
+      technician_signed_at: null,
+      created_by: profile?.id || 'guest',
+    };
+    void materialsTotal;
+
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('service_orders').insert(basePayload);
+      if (error) { alert('Não foi possível salvar a OS: ' + error.message); return; }
+      const { data } = await realSupabase.from('service_orders').select('*').eq('project_id', selectedProjectId).order('created_at', { ascending: false });
+      setServiceOrders((data as ServiceOrder[]) || []);
+    } else {
+      const newOs: ServiceOrder = { id: `os-${Date.now()}`, created_at: new Date().toISOString(), ...basePayload };
+      const current = mockDb.getServiceOrders();
+      current.unshift(newOs);
+      mockDb.setServiceOrders(current);
+      setServiceOrders(current);
+    }
+
+    setShowCreateServiceOrder(false);
+    setOsForm(emptyOsForm());
+  };
+
+  const handleUpdateServiceOrder = async (id: string, updates: Partial<ServiceOrder>) => {
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('service_orders').update(updates).eq('id', id);
+      if (error) { alert('Não foi possível atualizar a OS: ' + error.message); return; }
+      setServiceOrders(prev => prev.map(o => o.id === id ? { ...o, ...updates } : o));
+    } else {
+      const current = mockDb.getServiceOrders().map(o => o.id === id ? { ...o, ...updates } : o);
+      mockDb.setServiceOrders(current);
+      setServiceOrders(current);
+    }
+  };
+
+  const handleDeleteServiceOrder = async (id: string) => {
+    if (isRealSupabaseConfigured && realSupabase) {
+      const { error } = await realSupabase.from('service_orders').delete().eq('id', id);
+      if (error) { console.error('Erro ao apagar OS:', error); return; }
+      setServiceOrders(prev => prev.filter(o => o.id !== id));
+    } else {
+      const current = mockDb.getServiceOrders().filter(o => o.id !== id);
+      mockDb.setServiceOrders(current);
+      setServiceOrders(current);
+    }
+  };
+
+  // Gera o PDF da OS e abre o menu nativo de compartilhamento (WhatsApp incluso)
+  const handleShareServiceOrderWhatsApp = async (os: ServiceOrder) => {
+    if (sharingServiceOrder) return;
+    setSharingServiceOrder(true);
+    try {
+      setViewingServiceOrderId(os.id);
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+      if (!osShareCardRef.current) {
+        throw new Error('Não foi possível preparar a OS.');
+      }
+
+      const fileName = `${os.os_number}-${os.client_name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.pdf`;
+      await shareElementAsPdf(
+        osShareCardRef.current,
+        fileName,
+        `Ordem de Serviço ${os.os_number}`,
+        `Ordem de Serviço ${os.os_number} - ${os.client_name}, gerada pelo app PHD Gestões.`
+      );
+    } catch (err: any) {
+      console.error('Erro ao compartilhar OS:', err);
+      alert('Erro ao compartilhar: ' + (err && err.message ? err.message : String(err)));
+    } finally {
+      setSharingServiceOrder(false);
+      setViewingServiceOrderId(null);
+    }
+  };
+
   const handleSeedSafetyChecklist = async (projectId: string) => {
     const existing = safetyItems.filter(s => s.project_id === projectId);
     if (existing.length > 0) return;
@@ -1296,10 +1621,14 @@ export default function App() {
     loadData();
   };
 
-  const handleIncidentPhotoSelect = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = () => setNewIncidentPhoto(reader.result as string);
-    reader.readAsDataURL(file);
+  const handleIncidentPhotoSelect = async (file: File) => {
+    if (!selectedProjectId) return;
+    const { url, error } = await uploadProjectPhoto(selectedProjectId, 'ocorrencia', file);
+    if (error) {
+      alert('Não foi possível enviar a foto: ' + error);
+      return;
+    }
+    setNewIncidentPhoto(url);
   };
 
 
@@ -1992,8 +2321,23 @@ export default function App() {
   // ==========================================
   if (!session) {
     return (
-      <div className="min-h-screen bg-background safe-area-top safe-area-bottom flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
-        <div className="sm:mx-auto sm:w-full sm:max-w-md text-center">
+      <div className="min-h-screen bg-background safe-area-top safe-area-bottom flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8 relative overflow-hidden">
+        <svg
+          className="pointer-events-none absolute bottom-0 left-0 w-full opacity-[0.06]"
+          viewBox="0 0 400 90"
+          preserveAspectRatio="xMidYMax slice"
+          style={{ height: '18vh' }}
+        >
+          <rect x="20" y="30" width="18" height="60" fill="#F5A623" />
+          <rect x="60" y="10" width="18" height="80" fill="#F5A623" />
+          <rect x="100" y="45" width="18" height="45" fill="#F5A623" />
+          <line x1="69" y1="10" x2="150" y2="25" stroke="#F5A623" strokeWidth="3" />
+          <rect x="220" y="20" width="18" height="70" fill="#F5A623" />
+          <line x1="229" y1="20" x2="310" y2="35" stroke="#F5A623" strokeWidth="3" />
+          <rect x="340" y="50" width="18" height="40" fill="#F5A623" />
+        </svg>
+
+        <div className="sm:mx-auto sm:w-full sm:max-w-md text-center relative z-10">
           <div className="mx-auto h-16 w-16 rounded-2xl overflow-hidden shadow-lg shadow-primary/20 relative group border border-primary/20">
             <img src={appIcon} alt="PHD Gestões" className="w-full h-full object-cover relative z-10 transition-transform duration-500 group-hover:scale-110" />
             <div className="absolute inset-0 bg-gradient-to-tr from-primary-dark to-accent opacity-0 group-hover:opacity-10 transition-opacity duration-300 z-20 pointer-events-none"></div>
@@ -2006,7 +2350,7 @@ export default function App() {
           </p>
         </div>
 
-        <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
+        <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md relative z-10">
           <div className="bg-surface py-8 px-6 shadow-md rounded-2xl border border-border">
             
             {/* Tab selector */}
@@ -2783,7 +3127,7 @@ export default function App() {
                     <div 
                       key={proj.id}
                       onClick={() => { setSelectedProjectId(proj.id); setProjectSubTab('overview'); }}
-                      className="bg-surface rounded-2xl border border-border shadow-sm hover:shadow-md hover:border-primary-100 transition duration-300 cursor-pointer flex flex-col group overflow-hidden"
+                      className="bg-surface bg-blueprint rounded-2xl border border-border shadow-sm hover:shadow-md hover:border-primary-100 transition duration-300 cursor-pointer flex flex-col group overflow-hidden"
                     >
                       {proj.cover_image && (
                         <img
@@ -2827,28 +3171,66 @@ export default function App() {
                             <Calendar size={14} className="text-text-light shrink-0" />
                             <span>Prazo: {formatDate(proj.deadline)}</span>
                             {daysLeft !== null && (
-                              <span className={`ml-auto font-bold ${
-                                isOverdue ? 'text-error animate-pulse' : daysLeft <= 15 ? 'text-warning' : 'text-success'
-                              }`}>
-                                {isOverdue ? `${Math.abs(daysLeft)}d de atraso` : `${daysLeft}d restantes`}
-                              </span>
+                              isOverdue ? (
+                                <span className="ml-auto font-bold text-error animate-pulse">{Math.abs(daysLeft)}d de atraso</span>
+                              ) : daysLeft <= 15 ? (
+                                <span className="ml-auto inline-flex items-center gap-1 bg-[#F5A623]/10 text-[#b5750f] border border-[#F5A623]/30 px-2 py-0.5 rounded-full font-bold text-[10px]">
+                                  ⚠ {daysLeft}d restantes
+                                </span>
+                              ) : (
+                                <span className="ml-auto font-bold text-success">{daysLeft}d restantes</span>
+                              )
                             )}
                           </div>
                         </div>
 
-                        {/* Progress Bar */}
+                        {/* Progress Bar estilo trena */}
                         <div className="space-y-1">
                           <div className="flex justify-between text-xs font-bold text-text-secondary">
                             <span>Conclusão Geral</span>
-                            <span className="text-primary">{proj.progress}%</span>
+                            <span className="text-primary font-mono">{proj.progress}%</span>
                           </div>
-                          <div className="h-2 w-full bg-input-bg rounded-full overflow-hidden">
-                            <div 
-                              className="h-full bg-primary rounded-full transition-all duration-500"
+                          <div className="relative h-3.5 w-full bg-input-bg rounded-sm overflow-hidden">
+                            <div
+                              className="h-full bg-gradient-to-r from-primary to-primary-light rounded-sm transition-all duration-500 relative"
                               style={{ width: `${proj.progress}%` }}
-                            ></div>
+                            >
+                              <div className="absolute inset-0 flex">
+                                {Array.from({ length: 10 }).map((_, i) => (
+                                  <span key={i} className="flex-1 border-r border-white/40 last:border-r-0" />
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex justify-between text-[8px] font-mono text-text-light px-0.5">
+                            <span>0</span><span>25</span><span>50</span><span>75</span><span>100</span>
                           </div>
                         </div>
+
+                        {/* Mini Curva S (sparkline físico x financeiro) */}
+                        {(() => {
+                          const snaps = progressSnapshots
+                            .filter(s => s.project_id === proj.id)
+                            .sort((a, b) => a.snapshot_date.localeCompare(b.snapshot_date));
+                          if (snaps.length < 2) return null;
+                          const w = 90, h = 28, n = snaps.length;
+                          const maxV = Math.max(100, ...snaps.map(s => Math.max(s.physical_progress, s.financial_progress)));
+                          const toPts = (key: 'physical_progress' | 'financial_progress') =>
+                            snaps.map((s, i) => `${(i / (n - 1)) * w},${h - (s[key] / maxV) * h}`).join(' ');
+                          const latest = snaps[snaps.length - 1];
+                          const diff = latest.financial_progress - latest.physical_progress;
+                          return (
+                            <div className="flex items-center gap-2.5 pt-1 border-t border-border/60">
+                              <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="shrink-0">
+                                <polyline points={toPts('physical_progress')} fill="none" stroke="#0066ff" strokeWidth="2" />
+                                <polyline points={toPts('financial_progress')} fill="none" stroke="#F5A623" strokeWidth="2" />
+                              </svg>
+                              <span className="text-[10px] text-text-light">
+                                Curva S: {diff > 5 ? <span className="text-[#b5750f] font-bold">gasto à frente</span> : <span className="text-success font-bold">em linha</span>}
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </div>
 
                       {/* Card Footer actions */}
@@ -3167,6 +3549,14 @@ export default function App() {
                 }`}
               >
                 Financeiro
+              </button>
+              <button
+                onClick={() => setProjectSubTab('os')}
+                className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${
+                  projectSubTab === 'os' ? 'bg-primary text-white shadow-sm' : 'text-text-secondary hover:text-text'
+                }`}
+              >
+                OS ({serviceOrders.filter(o => o.project_id === selectedProjectId).length})
               </button>
               <button
                 onClick={() => setProjectSubTab('team')}
@@ -4183,19 +4573,19 @@ export default function App() {
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                     <div className="p-4 bg-surface border border-border rounded-xl">
                       <span className="block text-[10px] text-text-light font-bold uppercase tracking-wider">Orçado</span>
-                      <span className="text-lg font-bold text-secondary">{fmt(totalPlanned)}</span>
+                      <span className="text-lg font-bold text-secondary font-mono">{fmt(totalPlanned)}</span>
                     </div>
                     <div className="p-4 bg-surface border border-border rounded-xl">
                       <span className="block text-[10px] text-text-light font-bold uppercase tracking-wider">Realizado</span>
-                      <span className={`text-lg font-bold ${totalActual > totalPlanned ? 'text-error' : 'text-secondary'}`}>{fmt(totalActual)}</span>
+                      <span className={`text-lg font-bold font-mono ${totalActual > totalPlanned ? 'text-error' : 'text-secondary'}`}>{fmt(totalActual)}</span>
                     </div>
                     <div className="p-4 bg-surface border border-border rounded-xl">
                       <span className="block text-[10px] text-text-light font-bold uppercase tracking-wider">Entradas (Caixa)</span>
-                      <span className="text-lg font-bold text-success">{fmt(totalEntradas)}</span>
+                      <span className="text-lg font-bold text-success font-mono">{fmt(totalEntradas)}</span>
                     </div>
                     <div className="p-4 bg-surface border border-border rounded-xl">
                       <span className="block text-[10px] text-text-light font-bold uppercase tracking-wider">Saldo em Caixa</span>
-                      <span className={`text-lg font-bold ${saldo < 0 ? 'text-error' : 'text-success'}`}>{fmt(saldo)}</span>
+                      <span className={`text-lg font-bold font-mono ${saldo < 0 ? 'text-error' : 'text-success'}`}>{fmt(saldo)}</span>
                     </div>
                   </div>
 
@@ -4227,11 +4617,76 @@ export default function App() {
                           </div>
                           <div className="flex-1 min-w-[140px] p-3.5 bg-background rounded-xl border border-border">
                             <span className="block text-[10px] text-text-light font-bold uppercase tracking-wider">Custo por m²</span>
-                            <span className="text-lg font-bold text-secondary">
+                            <span className="text-lg font-bold text-secondary font-mono">
                               {custoPorM2 !== null ? custoPorM2.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : '— informe a área'}
                             </span>
                           </div>
                         </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Curva S: Progresso Físico x Financeiro */}
+                  {(() => {
+                    const projSnapshots = progressSnapshots
+                      .filter(s => s.project_id === selectedProjectId)
+                      .sort((a, b) => a.snapshot_date.localeCompare(b.snapshot_date));
+
+                    const chartData = projSnapshots.map(s => ({
+                      data: new Date(s.snapshot_date + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }),
+                      'Progresso Físico (%)': s.physical_progress,
+                      'Progresso Financeiro (%)': s.financial_progress,
+                    }));
+
+                    const latest = projSnapshots[projSnapshots.length - 1];
+                    const diff = latest ? latest.financial_progress - latest.physical_progress : null;
+
+                    return (
+                      <div className="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <h3 className="font-bold text-sm text-secondary uppercase tracking-wider">Curva S: Físico x Financeiro</h3>
+                          <button
+                            onClick={handleRecordProgressSnapshot}
+                            className="text-xs font-bold whitespace-nowrap px-3 py-1.5 rounded-lg bg-[#F5A623] text-[#3a2400] hover:brightness-95 transition"
+                          >
+                            + Registrar Ponto de Hoje
+                          </button>
+                        </div>
+
+                        {diff !== null && (
+                          <div className={`p-3 rounded-xl border text-xs font-semibold ${
+                            diff > 10 ? 'bg-error-light border-error/20 text-error'
+                            : diff > 0 ? 'bg-warning/10 border-warning/20 text-warning'
+                            : 'bg-success/10 border-success/20 text-success'
+                          }`}>
+                            {diff > 10 && `Atenção: a obra já gastou ${diff.toFixed(1)} pontos percentuais a mais do orçamento do que avançou fisicamente — sinal de possível prejuízo no ritmo atual.`}
+                            {diff > 0 && diff <= 10 && `A obra está gastando um pouco mais rápido (${diff.toFixed(1)} p.p.) do que constrói. Vale acompanhar de perto.`}
+                            {diff <= 0 && `Positivo: a obra está construindo mais rápido (${Math.abs(diff).toFixed(1)} p.p.) do que está gastando do orçamento.`}
+                          </div>
+                        )}
+
+                        {chartData.length === 0 ? (
+                          <p className="text-sm text-text-light text-center py-6">
+                            Nenhum ponto registrado ainda. Clique em "Registrar Ponto de Hoje" (o ideal é uma vez por mês) pra começar a montar a curva desta obra.
+                          </p>
+                        ) : (
+                          <div className="w-full h-64">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <LineChart data={chartData} margin={{ top: 5, right: 8, left: -20, bottom: 0 }}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
+                                <XAxis dataKey="data" tick={{ fontSize: 11 }} />
+                                <YAxis tick={{ fontSize: 11 }} unit="%" />
+                                <Tooltip formatter={(v: number) => `${v.toFixed(1)}%`} />
+                                <Legend wrapperStyle={{ fontSize: 11 }} />
+                                <Line type="monotone" dataKey="Progresso Físico (%)" stroke="#0066ff" strokeWidth={2} dot={{ r: 3 }} />
+                                <Line type="monotone" dataKey="Progresso Financeiro (%)" stroke="#F5A623" strokeWidth={2} dot={{ r: 3 }} />
+                              </LineChart>
+                            </ResponsiveContainer>
+                          </div>
+                        )}
+                        <p className="text-[11px] text-text-light leading-relaxed">
+                          Progresso Físico = % de avanço da obra. Progresso Financeiro = % do orçamento total já gasto (categorias + pagamentos pagos). Quando o financeiro passa muito na frente do físico, é sinal de que a obra está consumindo dinheiro mais rápido do que entrega andamento — atenção à margem daquele mês.
+                        </p>
                       </div>
                     );
                   })()}
@@ -4541,6 +4996,91 @@ export default function App() {
                 </div>
               );
             })()}
+
+            {/* SUB-TAB: ORDEM DE SERVIÇO */}
+            {projectSubTab === 'os' && (
+              <div className="space-y-4 animate-fade-in">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-bold text-sm text-secondary uppercase tracking-wider">Ordens de Serviço</h3>
+                  <button
+                    onClick={openCreateServiceOrder}
+                    className="px-3 py-1.5 bg-primary hover:bg-primary-dark text-white text-xs font-bold rounded-lg transition flex items-center gap-1.5"
+                  >
+                    <Plus size={14} /> Nova OS
+                  </button>
+                </div>
+
+                {serviceOrders.filter(o => o.project_id === selectedProjectId).length === 0 ? (
+                  <div className="text-center py-10 text-text-light text-sm">
+                    Nenhuma ordem de serviço criada ainda nesta obra.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {serviceOrders.filter(o => o.project_id === selectedProjectId).map(os => {
+                      const materialsTotal = os.materials.reduce((sum, m) => sum + m.quantity * m.unit_price, 0);
+                      const total = materialsTotal + os.labor_value;
+                      const statusLabels: Record<ServiceOrder['status'], string> = {
+                        aberta: 'Aberta', em_execucao: 'Em Execução', concluida: 'Concluída', cancelada: 'Cancelada',
+                      };
+                      const statusColors: Record<ServiceOrder['status'], string> = {
+                        aberta: '#0066ff', em_execucao: '#F5A623', concluida: '#00c896', cancelada: '#ef4444',
+                      };
+                      return (
+                        <div key={os.id} className="bg-surface border border-border rounded-2xl p-4 space-y-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <p className="font-bold text-sm text-secondary font-mono">{os.os_number}</p>
+                              <p className="text-xs text-text-secondary">{os.client_name}</p>
+                              <p className="text-[11px] text-text-light">Emitida em {new Date(os.issued_at).toLocaleDateString('pt-BR')}</p>
+                            </div>
+                            <span
+                              className="text-[10px] font-bold px-2.5 py-1 rounded-full shrink-0"
+                              style={{ backgroundColor: `${statusColors[os.status]}20`, color: statusColors[os.status] }}
+                            >
+                              {statusLabels[os.status]}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-text-light">Valor total (mão de obra + materiais)</span>
+                            <span className="font-bold text-secondary font-mono">
+                              {total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                            </span>
+                          </div>
+
+                          <select
+                            value={os.status}
+                            onChange={(e) => handleUpdateServiceOrder(os.id, { status: e.target.value as ServiceOrder['status'] })}
+                            className="w-full px-3 py-1.5 text-xs rounded-lg border border-border bg-surface-alt"
+                          >
+                            <option value="aberta">Aberta</option>
+                            <option value="em_execucao">Em Execução</option>
+                            <option value="concluida">Concluída</option>
+                            <option value="cancelada">Cancelada</option>
+                          </select>
+
+                          <div className="flex gap-2 pt-1">
+                            <button
+                              onClick={() => handleShareServiceOrderWhatsApp(os)}
+                              disabled={sharingServiceOrder}
+                              className="flex-1 py-2 bg-[#25D366] hover:brightness-95 text-white text-xs font-bold rounded-lg transition flex items-center justify-center gap-1.5 disabled:opacity-60"
+                            >
+                              <Share2 size={13} /> {sharingServiceOrder && viewingServiceOrderId === os.id ? 'Gerando...' : 'Compartilhar via WhatsApp'}
+                            </button>
+                            <button
+                              onClick={() => { if (confirm('Apagar esta OS?')) handleDeleteServiceOrder(os.id); }}
+                              className="px-3 py-2 border border-error/30 text-error rounded-lg hover:bg-error-light transition"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* SUB-TAB: TEAM (EQUIPE LOCAL) */}
             {projectSubTab === 'team' && (
@@ -5911,6 +6451,125 @@ export default function App() {
       {/* ==========================================
           MODAL: DESIGN TEAM MEMBER (DESIGNAR INTEGRANTE)
          ========================================== */}
+      {showCreateServiceOrder && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in">
+          <div className="bg-surface rounded-t-2xl sm:rounded-2xl border border-border w-full sm:max-w-lg max-h-[92vh] overflow-y-auto shadow-xl">
+            <div className="flex justify-between items-center p-5 border-b border-border sticky top-0 bg-surface z-10">
+              <h4 className="font-bold text-lg text-secondary font-display">Nova Ordem de Serviço</h4>
+              <button onClick={() => setShowCreateServiceOrder(false)} className="text-text-light hover:text-text-secondary">
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateServiceOrder} className="p-5 space-y-6">
+              {/* Datas */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-text-secondary mb-1">Início Previsto</label>
+                  <input type="date" value={osForm.start_date} onChange={(e) => setOsForm({ ...osForm, start_date: e.target.value })}
+                    className="w-full px-3 py-2 text-sm rounded-xl border border-border bg-surface-alt" />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-text-secondary mb-1">Prazo de Conclusão</label>
+                  <input type="date" value={osForm.deadline} onChange={(e) => setOsForm({ ...osForm, deadline: e.target.value })}
+                    className="w-full px-3 py-2 text-sm rounded-xl border border-border bg-surface-alt" />
+                </div>
+              </div>
+
+              {/* Empresa prestadora */}
+              <div className="space-y-2">
+                <h5 className="text-xs font-bold uppercase tracking-wider text-primary">Empresa Prestadora</h5>
+                <input placeholder="Nome / Razão Social" value={osForm.company_name} onChange={(e) => setOsForm({ ...osForm, company_name: e.target.value })}
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-border bg-surface-alt" />
+                <div className="grid grid-cols-2 gap-2">
+                  <input placeholder="CNPJ" value={osForm.company_cnpj} onChange={(e) => setOsForm({ ...osForm, company_cnpj: e.target.value })}
+                    className="px-3 py-2 text-sm rounded-xl border border-border bg-surface-alt" />
+                  <input placeholder="Contato" value={osForm.company_contact} onChange={(e) => setOsForm({ ...osForm, company_contact: e.target.value })}
+                    className="px-3 py-2 text-sm rounded-xl border border-border bg-surface-alt" />
+                </div>
+                <input placeholder="Responsável Técnico" value={osForm.company_responsible} onChange={(e) => setOsForm({ ...osForm, company_responsible: e.target.value })}
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-border bg-surface-alt" />
+              </div>
+
+              {/* Cliente */}
+              <div className="space-y-2">
+                <h5 className="text-xs font-bold uppercase tracking-wider text-primary">Dados do Cliente</h5>
+                <input required placeholder="Nome completo / Razão Social *" value={osForm.client_name} onChange={(e) => setOsForm({ ...osForm, client_name: e.target.value })}
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-border bg-surface-alt" />
+                <div className="grid grid-cols-2 gap-2">
+                  <input placeholder="CPF/CNPJ" value={osForm.client_document} onChange={(e) => setOsForm({ ...osForm, client_document: e.target.value })}
+                    className="px-3 py-2 text-sm rounded-xl border border-border bg-surface-alt" />
+                  <input placeholder="Telefone" value={osForm.client_phone} onChange={(e) => setOsForm({ ...osForm, client_phone: e.target.value })}
+                    className="px-3 py-2 text-sm rounded-xl border border-border bg-surface-alt" />
+                </div>
+                <input placeholder="E-mail" value={osForm.client_email} onChange={(e) => setOsForm({ ...osForm, client_email: e.target.value })}
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-border bg-surface-alt" />
+                <input placeholder="Endereço exato de execução" value={osForm.client_address} onChange={(e) => setOsForm({ ...osForm, client_address: e.target.value })}
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-border bg-surface-alt" />
+              </div>
+
+              {/* Escopo */}
+              <div className="space-y-2">
+                <h5 className="text-xs font-bold uppercase tracking-wider text-primary">Escopo do Serviço</h5>
+                <textarea placeholder="Problema relatado / demanda" value={osForm.problem_description} onChange={(e) => setOsForm({ ...osForm, problem_description: e.target.value })}
+                  rows={2} className="w-full px-3 py-2 text-sm rounded-xl border border-border bg-surface-alt resize-none" />
+                <textarea placeholder="Descrição detalhada da execução (passo a passo técnico)" value={osForm.execution_description} onChange={(e) => setOsForm({ ...osForm, execution_description: e.target.value })}
+                  rows={3} className="w-full px-3 py-2 text-sm rounded-xl border border-border bg-surface-alt resize-none" />
+              </div>
+
+              {/* Materiais */}
+              <div className="space-y-2">
+                <h5 className="text-xs font-bold uppercase tracking-wider text-primary">Materiais / Insumos</h5>
+                {osForm.materials.length > 0 && (
+                  <div className="space-y-1.5">
+                    {osForm.materials.map((m, idx) => (
+                      <div key={idx} className="flex items-center justify-between text-xs bg-surface-alt px-3 py-2 rounded-lg">
+                        <span>{m.quantity}x {m.name} — {(m.quantity * m.unit_price).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</span>
+                        <button type="button" onClick={() => removeOsMaterial(idx)} className="text-error"><X size={14} /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="grid grid-cols-[1fr_60px_80px_36px] gap-2">
+                  <input placeholder="Material" value={osMaterialDraft.name} onChange={(e) => setOsMaterialDraft({ ...osMaterialDraft, name: e.target.value })}
+                    className="px-2 py-2 text-xs rounded-lg border border-border bg-surface-alt" />
+                  <input placeholder="Qtd" type="number" value={osMaterialDraft.quantity} onChange={(e) => setOsMaterialDraft({ ...osMaterialDraft, quantity: e.target.value })}
+                    className="px-2 py-2 text-xs rounded-lg border border-border bg-surface-alt" />
+                  <input placeholder="Preço un." type="number" step="0.01" value={osMaterialDraft.unit_price} onChange={(e) => setOsMaterialDraft({ ...osMaterialDraft, unit_price: e.target.value })}
+                    className="px-2 py-2 text-xs rounded-lg border border-border bg-surface-alt" />
+                  <button type="button" onClick={addOsMaterial} className="bg-primary text-white rounded-lg flex items-center justify-center"><Plus size={16} /></button>
+                </div>
+                <input placeholder="Equipe envolvida (nomes separados por vírgula)" value={osForm.team_names} onChange={(e) => setOsForm({ ...osForm, team_names: e.target.value })}
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-border bg-surface-alt" />
+              </div>
+
+              {/* Comercial */}
+              <div className="space-y-2">
+                <h5 className="text-xs font-bold uppercase tracking-wider text-primary">Condições Comerciais</h5>
+                <div className="grid grid-cols-2 gap-2">
+                  <input placeholder="Valor da mão de obra (R$)" type="number" step="0.01" value={osForm.labor_value} onChange={(e) => setOsForm({ ...osForm, labor_value: e.target.value })}
+                    className="px-3 py-2 text-sm rounded-xl border border-border bg-surface-alt" />
+                  <input placeholder="Forma de pagamento" value={osForm.payment_method} onChange={(e) => setOsForm({ ...osForm, payment_method: e.target.value })}
+                    className="px-3 py-2 text-sm rounded-xl border border-border bg-surface-alt" />
+                </div>
+                <p className="text-[11px] text-text-light">Esta OS serve como base para a emissão da Nota Fiscal de Serviços (NFS-e).</p>
+              </div>
+
+              <div className="flex gap-3 pt-1 sticky bottom-0 bg-surface pb-1">
+                <button type="button" onClick={() => setShowCreateServiceOrder(false)}
+                  className="flex-1 py-2.5 border border-border bg-surface hover:bg-input-bg text-text-secondary text-sm font-semibold rounded-xl transition">
+                  Cancelar
+                </button>
+                <button type="submit" className="flex-1 py-2.5 bg-primary hover:bg-primary-dark text-white text-sm font-semibold rounded-xl transition shadow-md">
+                  Gerar OS
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+
       {showInviteMember && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in">
           <div className="bg-surface rounded-2xl border border-border w-full max-w-sm shadow-xl overflow-hidden">
@@ -6257,6 +6916,132 @@ export default function App() {
               {/* Rodapé */}
               <div className="mt-8 pt-4 border-t border-border text-center">
                 <p className="text-[10px] text-text-light font-semibold">Relatório gerado automaticamente pelo app PHD Gestões</p>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Card imprimível da Ordem de Serviço (fora da tela, capturado como PDF) */}
+      {viewingServiceOrderId && (() => {
+        const os = serviceOrders.find(o => o.id === viewingServiceOrderId);
+        if (!os) return null;
+        const materialsTotal = os.materials.reduce((sum, m) => sum + m.quantity * m.unit_price, 0);
+        const totalGeral = materialsTotal + os.labor_value;
+
+        return (
+          <div
+            className="fixed top-0 pointer-events-none"
+            style={{ left: '-9999px', width: '800px' }}
+          >
+            <div ref={osShareCardRef} className="bg-white p-10 w-[800px] text-[#0a0e27]" style={{ fontFamily: 'inherit' }}>
+              {/* 1. Cabeçalho e Identificação */}
+              <div className="flex items-center justify-between border-b-4 pb-5 mb-6" style={{ borderColor: '#0066ff' }}>
+                <div>
+                  <h1 className="text-2xl font-bold leading-tight">{os.company_name || 'PHD Gestões'}</h1>
+                  {os.company_cnpj && <p className="text-xs text-gray-500">CNPJ: {os.company_cnpj}</p>}
+                  {os.company_contact && <p className="text-xs text-gray-500">Contato: {os.company_contact}</p>}
+                  {os.company_responsible && <p className="text-xs text-gray-500">Resp. Técnico: {os.company_responsible}</p>}
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-gray-500 font-semibold">Ordem de Serviço</p>
+                  <p className="text-xl font-bold" style={{ fontFamily: 'monospace' }}>{os.os_number}</p>
+                  <p className="text-[11px] text-gray-500 mt-1">Emitida em {new Date(os.issued_at).toLocaleDateString('pt-BR')} às {new Date(os.issued_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</p>
+                  {os.start_date && <p className="text-[11px] text-gray-500">Início previsto: {new Date(os.start_date + 'T00:00:00').toLocaleDateString('pt-BR')}</p>}
+                  {os.deadline && <p className="text-[11px] text-gray-500">Prazo de conclusão: {new Date(os.deadline + 'T00:00:00').toLocaleDateString('pt-BR')}</p>}
+                </div>
+              </div>
+
+              <div className="mb-6 p-4 rounded-xl" style={{ background: '#f8faff', border: '1px solid #e2e8f5' }}>
+                <h2 className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: '#0066ff' }}>Dados do Cliente</h2>
+                <p className="text-sm font-semibold">{os.client_name}</p>
+                {os.client_document && <p className="text-xs text-gray-600">Documento: {os.client_document}</p>}
+                {os.client_phone && <p className="text-xs text-gray-600">Telefone: {os.client_phone}</p>}
+                {os.client_email && <p className="text-xs text-gray-600">E-mail: {os.client_email}</p>}
+                {os.client_address && <p className="text-xs text-gray-600">Endereço de execução: {os.client_address}</p>}
+              </div>
+
+              {/* 2. Escopo */}
+              {(os.problem_description || os.execution_description) && (
+                <div className="mb-6">
+                  <h2 className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: '#0066ff' }}>Escopo e Descrição do Serviço</h2>
+                  {os.problem_description && (
+                    <p className="text-sm mb-1"><span className="font-semibold">Demanda:</span> {os.problem_description}</p>
+                  )}
+                  {os.execution_description && (
+                    <p className="text-sm"><span className="font-semibold">Execução:</span> {os.execution_description}</p>
+                  )}
+                </div>
+              )}
+
+              {/* 3. Insumos, Materiais e Mão de Obra */}
+              {os.materials.length > 0 && (
+                <div className="mb-6">
+                  <h2 className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: '#0066ff' }}>Materiais Aplicados</h2>
+                  <table className="w-full text-xs border-collapse">
+                    <thead>
+                      <tr className="text-left text-gray-500 border-b" style={{ borderColor: '#e2e8f5' }}>
+                        <th className="py-1.5 font-semibold">Item</th>
+                        <th className="py-1.5 font-semibold text-right">Qtd</th>
+                        <th className="py-1.5 font-semibold text-right">Valor Un.</th>
+                        <th className="py-1.5 font-semibold text-right">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {os.materials.map((m, idx) => (
+                        <tr key={idx} className="border-b" style={{ borderColor: '#f0f4ff' }}>
+                          <td className="py-1.5">{m.name}</td>
+                          <td className="py-1.5 text-right">{m.quantity}</td>
+                          <td className="py-1.5 text-right">{m.unit_price.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                          <td className="py-1.5 text-right font-semibold">{(m.quantity * m.unit_price).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {os.team_names && (
+                <p className="text-xs text-gray-600 mb-6"><span className="font-semibold">Equipe envolvida:</span> {os.team_names}</p>
+              )}
+
+              {/* 4. Condições Comerciais e Financeiras */}
+              <div className="mb-6 p-4 rounded-xl" style={{ background: '#f8faff', border: '1px solid #e2e8f5' }}>
+                <h2 className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: '#0066ff' }}>Condições Comerciais</h2>
+                <div className="flex justify-between text-xs mb-1"><span>Materiais</span><span>{materialsTotal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</span></div>
+                <div className="flex justify-between text-xs mb-1"><span>Mão de obra</span><span>{os.labor_value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</span></div>
+                <div className="flex justify-between text-sm font-bold pt-1.5 border-t" style={{ borderColor: '#cbd5e1' }}>
+                  <span>Valor Total do Serviço</span>
+                  <span style={{ fontFamily: 'monospace' }}>{totalGeral.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</span>
+                </div>
+                {os.payment_method && <p className="text-xs text-gray-600 mt-2">Forma de pagamento: {os.payment_method}</p>}
+                <p className="text-[10px] text-gray-400 mt-2">Esta OS serve como base para a emissão da Nota Fiscal de Serviços (NFS-e).</p>
+              </div>
+
+              {/* 5. Encerramento e Validação */}
+              <div className="mb-4">
+                <h2 className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: '#0066ff' }}>Encerramento e Validação</h2>
+                <p className="text-xs text-gray-600 mb-4">
+                  Status: <span className="font-semibold">{{ aberta: 'Aberta', em_execucao: 'Em Execução', concluida: 'Concluída', cancelada: 'Cancelada' }[os.status]}</span>
+                  {os.acceptance_notes && <> — {os.acceptance_notes}</>}
+                </p>
+                <div className="grid grid-cols-2 gap-8 mt-10">
+                  <div className="text-center">
+                    <div className="border-t pt-1" style={{ borderColor: '#0a0e27' }}>
+                      <p className="text-xs font-semibold">{os.client_signature_name || os.client_name}</p>
+                      <p className="text-[10px] text-gray-500">Assinatura do Cliente</p>
+                    </div>
+                  </div>
+                  <div className="text-center">
+                    <div className="border-t pt-1" style={{ borderColor: '#0a0e27' }}>
+                      <p className="text-xs font-semibold">{os.technician_signature_name || os.company_responsible}</p>
+                      <p className="text-[10px] text-gray-500">Assinatura do Técnico Responsável</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-8 pt-4 border-t text-center" style={{ borderColor: '#e2e8f5' }}>
+                <p className="text-[10px] text-gray-400 font-semibold">Documento gerado pelo app PHD Gestões</p>
               </div>
             </div>
           </div>
